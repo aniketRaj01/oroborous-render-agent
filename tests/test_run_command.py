@@ -27,7 +27,14 @@ def rig(tmp_path: Path) -> Rig:
 
 
 def env_for(rig: Rig, **extra: str) -> dict[str, str]:
-    return {**valid_env(), "SCRATCH_DIR": str(rig.scratch), **extra}
+    """Unsigned loopback Job API config, so no AWS credentials are needed to build the client."""
+    return {
+        **valid_env(),
+        "JOB_API_URL": "http://127.0.0.1:8123",
+        "JOB_API_SIGNING": "none",
+        "SCRATCH_DIR": str(rig.scratch),
+        **extra,
+    }
 
 
 def run_main(
@@ -85,6 +92,13 @@ def test_exit_2_when_the_scratch_dir_is_unusable(rig: Rig, tmp_path: Path) -> No
     not_a_dir.write_text("x")
     code, output = run_main(rig, env=env_for(rig, SCRATCH_DIR=str(not_a_dir)))
     assert code == 2 and "SCRATCH_DIR" in output
+
+
+def test_exit_3_when_there_are_no_aws_credentials(rig: Rig) -> None:
+    env = env_for(rig, JOB_API_URL="https://fake-id.lambda-url.us-east-1.on.aws")
+    del env["JOB_API_SIGNING"]
+    code, _ = run_main(rig, env=env)
+    assert code == 3 and rig.fake_api.requests == []
 
 
 def test_exit_3_on_a_job_api_auth_error(rig: Rig) -> None:

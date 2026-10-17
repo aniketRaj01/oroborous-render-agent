@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from fakes.clock import FakeClock
@@ -13,6 +15,16 @@ FAKE_AGENT = "test-agent-1"
 
 def valid_env() -> dict[str, str]:
     return {"JOB_API_URL": FAKE_URL, "AGENT_ID": FAKE_AGENT}
+
+
+@pytest.fixture(autouse=True)
+def hermetic_aws_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test may see the developer's AWS credentials, profile or instance metadata."""
+    for name in [n for n in os.environ if n.startswith("AWS_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/nonexistent/credentials")
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/nonexistent/config")
 
 
 @pytest.fixture
