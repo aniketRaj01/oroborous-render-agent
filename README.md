@@ -59,6 +59,24 @@ uv run python scripts/demo_fake_run.py            # the real loop against in-pro
 
 `run` really claims and completes jobs: only point it at a throwaway plan (see the PR notes for the manual test).
 
+## Deployment
+
+At every boot the GPU instance runs the newest released version (`vX.Y.Z` tag on `main`), installed
+reproducibly from `requirements.lock`, self-checked before use, with the last good version as
+fallback. The pieces:
+
+| Path | Purpose |
+|---|---|
+| `deploy/bootstrap.py` | boot-time fetch, verify, install, self-check and atomic switch (standard library only) |
+| `deploy/systemd/` | `render-agent.service` and the opt-in dead-man timer |
+| `deploy/install.sh` | one-time machine setup (`--root DIR` stages into a directory, `--dry-run` previews) |
+| `scripts/release.py` | cuts a release tag after checking every precondition |
+| `scripts/export_requirements.sh` | regenerates (or `--check`s) `requirements.lock` from `uv.lock` |
+| `python -m render_agent selfcheck` | imports the package and every dependency; no settings, no network |
+
+Setup, releasing, rollback, logs and the first-boot checklist are in
+[`docs/instance-runbook.md`](docs/instance-runbook.md).
+
 ## Working on this repo
 
 Read [`CLAUDE.md`](CLAUDE.md) first. It defines the stack, the rules for never committing secrets or identifiers, the agent's behaviour requirements and the PR workflow.

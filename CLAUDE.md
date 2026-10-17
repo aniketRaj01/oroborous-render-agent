@@ -117,20 +117,22 @@ These come from the operating model, so they are not optional:
 - **Fail loudly at start-up** on bad configuration; **fail safely at run time** (report, back off, continue or stop deliberately).
 - **Time and retries are injectable.** No bare `time.sleep` or `datetime.now()` in logic that needs testing; pass a clock/sleeper.
 
-## Deployment model (constraints; the design happens in the first session)
+## Deployment model
 
-- The instance gets the agent by pulling this **public** repository over HTTPS at boot. No credentials are stored for it.
-- It must run a **pinned, released version** (a tag or commit that was deliberately released), not whatever is on `main` at that moment, and it must fall back to the last known-good checkout if the pull fails. The release mechanism (tag naming, pointer) is designed in a PR, not improvised.
-- The agent runs as a systemd service with a restart policy; the bootstrap script and unit files live in `deploy/`. They contain no secrets and no real identifiers: those come from SSM or the on-disk config file at runtime.
-- Python dependencies must install reproducibly from the lock file. Decide in a PR whether they are baked into the machine image or installed at boot, and document the trade-off.
-- Nothing in this repo may assume the instance has internet access beyond GitHub, PyPI (if used at boot), and AWS endpoints.
+Built in `deploy/` and `scripts/`; the operator's procedures are in `docs/instance-runbook.md`.
 
-### Intended release design (PR 3; intent, not yet built)
+- The instance gets the agent by pulling this **public** repository over HTTPS at every boot. No credentials are stored for it.
+- It runs a **pinned, released version**: the newest git tag `vX.Y.Z` (compared as semantic versions) whose commit is an ancestor of `origin/main` and whose `pyproject.toml` version equals the tag, never whatever is on `main`. `RENDER_AGENT_PIN` runs one exact tag instead (manual rollback). Released versions are immutable: a tag moved to another commit is refused.
+- The agent runs as a systemd service (`deploy/systemd/render-agent.service`, restart on failure, no restart on exit codes 2, 3 and 5). `deploy/install.sh` prepares the machine once and `deploy/bootstrap.py` (Python standard library only, run as `ExecStartPre`) prepares the release at each boot. Neither contains secrets or real identifiers: those come from SSM or `/etc/render-agent/agent.env` at runtime. `bootstrap.py` and the units are installed by `install.sh`, not by a release, so a change under `deploy/` reaches an instance only when `install.sh` is run again.
+- Python dependencies are **installed at boot, not baked into the image**, from `requirements.lock` (hashes, no dev dependencies, exported from `uv.lock` by `scripts/export_requirements.sh`; CI fails when the committed file is out of date). The virtualenv is rebuilt only when the hash of `requirements.lock` changes. Trade-off: a changed lock needs PyPI at boot, and the bootstrap falls back to the current version when that fails; pre-loading the first release while the image is built (runbook step 4) makes the first boot independent of the network.
+- Nothing in this repo may assume the instance has internet access beyond GitHub, PyPI (only when `requirements.lock` changed), and AWS endpoints.
 
-- The instance runs a git tag `vX.Y.Z` of this repository. The tag's commit must be an ancestor of `origin/main`.
-- The bootstrap records the commit SHA, hashes `requirements.lock`, and reinstalls dependencies (with `--require-hashes`) only when that hash changes.
-- A self-check runs before switching to a new release; the previous release is kept for fallback.
-- `agentVersion` is the tag plus the short SHA.
+### Release design
+
+- A release is cut with `scripts/release.py vX.Y.Z` (annotated tag, pushed alone, after checking the tag format, the pyproject version, a clean tree, `main` equal to the remote, `requirements.lock` in sync and green CI; `--dry-run` changes nothing).
+- The bootstrap keeps a bare mirror, exports a tag to `releases/<tag>` (with its commit in `RELEASE`), builds `venvs/<sha256-12 of requirements.lock>` with `pip install --require-hashes --only-binary=:all: --no-deps` followed by `pip check`, and runs `python -m render_agent selfcheck` in it. Only then does it switch `current` and `current-venv` (atomic symlink replacement) and keep the old pair as `previous` and `previous-venv`. It keeps the 3 newest releases plus `previous`.
+- Any failure while preparing a new tag (fetch, tag checks, install, selfcheck, the 5 minute time budget) is logged and the agent starts on the current pair; the bootstrap fails the start only when no usable pair exists.
+- `agentVersion` is the tag plus the short SHA (`vX.Y.Z+<12 hex>`), written to `/run/render-agent/version.env` as `AGENT_VERSION` and sent with every claim.
 
 ## Code style guardrails
 
