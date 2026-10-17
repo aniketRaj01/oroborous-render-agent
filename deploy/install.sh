@@ -15,6 +15,8 @@ usage: install.sh [options]
 
   --service-user USER   account the service runs as (default: $SUDO_USER, else the first
                         regular account on this machine)
+  --ltx-root DIR        also install and enable the model server unit; DIR is the LTX-2
+                        checkout whose .venv runs it (absolute path)
   --root DIR            stage everything under DIR instead of /, for testing; no systemctl calls
   --dry-run             print what would be done and change nothing
   --install-packages    apt-get install missing prerequisites (nothing is installed by default)
@@ -35,6 +37,7 @@ say() {
 root=""
 dry_run=0
 service_user=""
+ltx_root=""
 install_packages=0
 enable_deadman=0
 
@@ -43,6 +46,11 @@ while [ $# -gt 0 ]; do
     --service-user)
         [ $# -ge 2 ] || die "--service-user needs a value"
         service_user="$2"
+        shift 2
+        ;;
+    --ltx-root)
+        [ $# -ge 2 ] || die "--ltx-root needs a value"
+        ltx_root="${2%/}"
         shift 2
         ;;
     --root)
@@ -74,6 +82,16 @@ while [ $# -gt 0 ]; do
 done
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -n "${ltx_root}" ]; then
+    case "${ltx_root}" in
+    /* | "") ;;
+    *) die "--ltx-root must be an absolute path" ;;
+    esac
+    case "${ltx_root}" in
+    *[!A-Za-z0-9_./-]*) die "--ltx-root may only contain letters, digits and _ . / -" ;;
+    esac
+fi
 
 if [ -n "${root}" ]; then
     [ "${install_packages}" -eq 0 ] || die "--install-packages cannot be combined with --root"
@@ -181,7 +199,7 @@ install_file() { # source destination mode [owner]
 install_unit() { # source file name
     local rendered
     rendered="$(mktemp)"
-    sed "s|@SERVICE_USER@|${service_user}|g" "$1" >"${rendered}"
+    sed -e "s|@SERVICE_USER@|${service_user}|g" -e "s|@LTX_ROOT@|${ltx_root}|g" "$1" >"${rendered}"
     install_file "${rendered}" "/etc/systemd/system/$2" 0644
     rm -f "${rendered}"
 }
@@ -189,8 +207,9 @@ install_unit() { # source file name
 # Create a config file from its example only when it is missing. Either way it ends up owned by
 # the service user with mode 0600: the agent's config loader rejects a file readable by group or
 # others, and the service (running as that user) must still be able to read it.
-install_config() { # example destination
-    local dest
+install_config() { # example destination [mode]
+    local dest mode
+    mode="${3:-0600}"
     dest="$(path_of "$2")"
     if [ -e "${dest}" ]; then
         say "keeping existing: $2"
@@ -198,7 +217,7 @@ install_config() { # example destination
         say "creating from example: $2"
         act cp "$1" "${dest}"
     fi
-    act chmod 0600 "${dest}"
+    act chmod "${mode}" "${dest}"
     act chown "${owner}" "${dest}"
 }
 
@@ -213,6 +232,10 @@ install_unit "${script_dir}/systemd/render-agent-deadman.service" render-agent-d
 install_unit "${script_dir}/systemd/render-agent-deadman.timer" render-agent-deadman.timer
 install_config "${script_dir}/agent.env.example" /etc/render-agent/agent.env
 install_config "${script_dir}/deploy.env.example" /etc/render-agent/deploy.env
+if [ -n "${ltx_root}" ]; then
+    install_unit "${script_dir}/systemd/ltx-server.service" ltx-server.service
+    install_config "${script_dir}/ltx-server.env.example" /etc/render-agent/ltx-server.env 0644
+fi
 
 # --- enabling --------------------------------------------------------------------------------
 
@@ -243,6 +266,9 @@ if [ -z "${root}" ]; then
     act systemctl daemon-reload
 fi
 enable_unit render-agent.service multi-user.target.wants
+if [ -n "${ltx_root}" ]; then
+    enable_unit ltx-server.service multi-user.target.wants
+fi
 if [ "${enable_deadman}" -eq 1 ]; then
     enable_unit render-agent-deadman.timer timers.target.wants
     say "the dead-man timer is ENABLED: the instance powers off 65 minutes after boot"

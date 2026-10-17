@@ -25,6 +25,7 @@ ALLOWED_URLS = {
     "https://github.com/pre-commit/pre-commit-hooks",
     "https://github.com/shellcheck-py/shellcheck-py",
     "https://docs.astral.sh/uv/",
+    "https://github.com/Lightricks/LTX-2",
     "https://example.invalid",
     "https://fake-id.lambda-url.us-east-1.on.aws",
     "http://127.0.0.1:8000",
