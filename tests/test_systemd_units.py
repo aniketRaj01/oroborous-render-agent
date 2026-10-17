@@ -13,6 +13,7 @@ UNITS = Path(__file__).resolve().parent.parent / "deploy" / "systemd"
 SERVICE = UNITS / "render-agent.service"
 DEADMAN_SERVICE = UNITS / "render-agent-deadman.service"
 DEADMAN_TIMER = UNITS / "render-agent-deadman.timer"
+LTX_SERVICE = UNITS / "ltx-server.service"
 
 SENSITIVE = [
     r"https?://",
@@ -136,7 +137,9 @@ def test_the_deadman_is_documented_as_opt_in() -> None:
     assert "Not enabled by default" in text and "no-shutdown" in text and "--enable-deadman" in text
 
 
-@pytest.mark.parametrize("path", [SERVICE, DEADMAN_SERVICE, DEADMAN_TIMER], ids=lambda p: p.name)
+@pytest.mark.parametrize(
+    "path", [SERVICE, DEADMAN_SERVICE, DEADMAN_TIMER, LTX_SERVICE], ids=lambda p: p.name
+)
 def test_no_secrets_or_real_identifiers_in_unit_files(path: Path) -> None:
     text = path.read_text()
     for pattern in SENSITIVE:
@@ -152,9 +155,10 @@ def test_systemd_analyze_accepts_the_unit_files(tmp_path: Path) -> None:
     if analyzer is None:
         pytest.skip("systemd-analyze is not installed here; CI runs this check on Linux")
     staged = []
-    for path in (SERVICE, DEADMAN_SERVICE, DEADMAN_TIMER):
+    for path in (SERVICE, DEADMAN_SERVICE, DEADMAN_TIMER, LTX_SERVICE):
         target = tmp_path / path.name
-        target.write_text(path.read_text().replace("@SERVICE_USER@", "root"))
+        text = path.read_text().replace("@SERVICE_USER@", "root").replace("@LTX_ROOT@", "/opt/ltx")
+        target.write_text(text)
         staged.append(str(target))
     result = subprocess.run(
         [analyzer, "verify", *staged], capture_output=True, text=True, timeout=60, check=False
@@ -171,3 +175,63 @@ def test_systemd_analyze_accepts_the_unit_files(tmp_path: Path) -> None:
         if line.strip() and not any(marker in line for marker in BENIGN)
     ]
     assert result.returncode == 0 or unexplained == [], "\n".join(unexplained)
+
+
+# --- the model server unit ----------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def ltx() -> Unit:
+    return load_unit(LTX_SERVICE)
+
+
+def test_ltx_unit_uses_only_the_two_documented_placeholders() -> None:
+    placeholders = set(re.findall(r"@[A-Z_]+@", LTX_SERVICE.read_text()))
+    assert placeholders == {"@SERVICE_USER@", "@LTX_ROOT@"}
+
+
+def test_ltx_unit_runs_the_server_inside_the_ltx_virtualenv(ltx: Unit) -> None:
+    assert only(ltx, "Service", "User") == "@SERVICE_USER@"
+    assert only(ltx, "Service", "WorkingDirectory") == "@LTX_ROOT@"
+    assert only(ltx, "Service", "ExecStart") == "@LTX_ROOT@/.venv/bin/python -m ltx_server"
+    environment = ltx["Service"]["Environment"]
+    assert "PYTHONPATH=/opt/render-agent/current/model_server" in environment
+    assert "HF_HUB_OFFLINE=1" in environment
+    assert "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True" in environment
+    assert "LTX_ROOT=@LTX_ROOT@" in environment
+    assert only(ltx, "Service", "UnsetEnvironment") == "LD_LIBRARY_PATH"
+    assert only(ltx, "Service", "EnvironmentFile") == "-/etc/render-agent/ltx-server.env"
+
+
+def test_ltx_unit_restarts_cleanly_but_cannot_spin(ltx: Unit) -> None:
+    assert only(ltx, "Service", "Restart") == "on-failure"
+    assert int(only(ltx, "Service", "RestartSec")) >= 10
+    assert int(only(ltx, "Unit", "StartLimitIntervalSec")) >= 600
+    assert 1 <= int(only(ltx, "Unit", "StartLimitBurst")) <= 20
+
+
+def test_ltx_unit_caps_memory_below_the_machine_and_is_the_preferred_oom_victim(ltx: Unit) -> None:
+    assert only(ltx, "Service", "MemoryMax") == "55G"
+    assert int(only(ltx, "Service", "MemoryMax").removesuffix("G")) < 61
+    assert "61 GB" in LTX_SERVICE.read_text() and "Session Manager" in LTX_SERVICE.read_text()
+    assert int(only(ltx, "Service", "OOMScoreAdjust")) > 0
+    assert only(ltx, "Service", "LimitMEMLOCK") == "infinity"
+
+
+def test_ltx_unit_stop_timeout_exceeds_the_servers_grace_period(ltx: Unit) -> None:
+    from ltx_server.config import Settings
+
+    assert int(only(ltx, "Service", "TimeoutStopSec")) > Settings().shutdown_grace_seconds
+
+
+def test_ltx_unit_shares_tmp_with_the_agent_and_says_why(ltx: Unit) -> None:
+    assert only(ltx, "Service", "NoNewPrivileges") == "yes"
+    assert "PrivateTmp" not in ltx["Service"]
+    text = LTX_SERVICE.read_text()
+    assert "PrivateTmp is deliberately NOT enabled" in text and "agent" in text
+
+
+def test_ltx_unit_starts_at_boot_and_the_agent_orders_itself_after_it(ltx: Unit) -> None:
+    assert only(ltx, "Install", "WantedBy") == "multi-user.target"
+    agent = load_unit(SERVICE)
+    assert "ltx-server.service" in only(agent, "Unit", "After").split()

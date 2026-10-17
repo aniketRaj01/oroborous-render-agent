@@ -35,7 +35,7 @@ packages = ["src/render_agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["src", "tests", "scripts", "deploy"]
+src = ["src", "tests", "scripts", "deploy", "model_server"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "C4", "S"]
@@ -44,13 +44,19 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "C4", "S"]
 "tests/**" = ["S", "PT018"]
 "scripts/**" = ["S"]
 "deploy/**" = ["S"]
+"model_server/**" = ["S"]
 
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "tests", "scripts", "deploy"]
-mypy_path = "deploy:scripts:tests"
+files = ["src", "tests", "scripts", "deploy", "model_server"]
+mypy_path = "deploy:scripts:tests:model_server:model_server/tools"
 python_version = "3.10"
+
+[[tool.mypy.overrides]]
+# torch and LTX-2 exist only on the GPU instance; the binding imports them lazily.
+module = ["torch", "torch.*", "ltx_core", "ltx_core.*", "ltx_pipelines", "ltx_pipelines.*"]
+ignore_missing_imports = true
 
 [tool.pydantic-mypy]
 init_forbid_extra = true
@@ -60,4 +66,4 @@ warn_required_dynamic_aliases = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-pythonpath = ["tests", "deploy", "scripts"]
+pythonpath = ["tests", "deploy", "scripts", "model_server", "model_server/tools"]

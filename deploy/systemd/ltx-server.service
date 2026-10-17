@@ -1,0 +1,54 @@
+# Oroborous model server (LTX): renders one clip per request on localhost for the render agent.
+# Installed by deploy/install.sh --ltx-root DIR, which replaces @SERVICE_USER@ and @LTX_ROOT@
+# (the LTX-2 checkout whose .venv runs the server). render-agent.service starts after it.
+[Unit]
+Description=Oroborous model server (LTX)
+# The server code is delivered with the agent's releases (see PYTHONPATH below). On the very first
+# boot the agent's bootstrap may not have created it yet; the restart policy below covers that
+# gap, and pre-loading the first release while the image is built (runbook) avoids it entirely.
+After=network.target
+StartLimitIntervalSec=1800
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+WorkingDirectory=@LTX_ROOT@
+# The server shell is the python package model_server/ltx_server of the current agent release.
+# It uses only the standard library, so it runs inside the LTX virtualenv unchanged.
+Environment=PYTHONPATH=/opt/render-agent/current/model_server
+Environment=LTX_ROOT=@LTX_ROOT@
+# Never reach out to the Hugging Face hub: all weights are local files.
+Environment=HF_HUB_OFFLINE=1
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# A stale LD_LIBRARY_PATH from the login environment breaks the CUDA libraries.
+UnsetEnvironment=LD_LIBRARY_PATH
+# Optional tuning (OFFLOAD_MODE, WARMUP, MAX_CONSECUTIVE_OOMS, ...); see docs/model-server-runbook.md.
+EnvironmentFile=-/etc/render-agent/ltx-server.env
+ExecStart=@LTX_ROOT@/.venv/bin/python -m ltx_server
+
+# The server exits non-zero on purpose after repeated out-of-memory failures, or when the model
+# cannot be loaded, so systemd restarts it with a clean process (and clean GPU memory).
+Restart=on-failure
+RestartSec=30
+
+# The instance has 61 GB of RAM. The cached weights take most of it, so this cap makes the SERVER
+# hit its own limit (and be restarted) long before it could starve the operating system and the
+# Session Manager agent, which would leave the machine unreachable.
+MemoryMax=55G
+# If the kernel's global OOM killer does run, take this process first, not sshd or the SSM agent.
+OOMScoreAdjust=500
+# Weights are pinned in host RAM for fast streaming to the GPU; pinning needs an unlimited lock.
+LimitMEMLOCK=infinity
+
+# SIGTERM stops accepting requests and lets a running generation finish for up to
+# SHUTDOWN_GRACE_SECONDS (30 by default); keep this above it.
+TimeoutStopSec=60
+
+NoNewPrivileges=yes
+# PrivateTmp is deliberately NOT enabled. The render agent's scratch directory (default
+# /tmp/render-agent) is shared: the agent names the output file and this server writes it there.
+SyslogIdentifier=ltx-server
+
+[Install]
+WantedBy=multi-user.target

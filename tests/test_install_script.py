@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -305,3 +306,56 @@ def test_install_script_is_shellcheck_clean() -> None:
         [shellcheck, *map(str, scripts)], capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stdout
+
+
+# --- the model server unit ----------------------------------------------------------------------
+
+
+def test_the_model_server_unit_is_not_installed_without_ltx_root(root: Path) -> None:
+    install(root)
+    assert not (root / "etc/systemd/system/ltx-server.service").exists()
+    assert not (root / "etc/render-agent/ltx-server.env").exists()
+    assert not (root / "etc/systemd/system/multi-user.target.wants/ltx-server.service").exists()
+
+
+def test_ltx_root_installs_renders_and_enables_the_model_server_unit(root: Path) -> None:
+    result = install(root, "--ltx-root", "/home/someone/LTX-2/")
+    assert result.returncode == 0, result.stderr
+    unit = root / "etc/systemd/system/ltx-server.service"
+    assert mode(unit) == 0o644 and re.search(r"@[A-Z_]+@", unit.read_text()) is None
+    parsed = load_unit(unit)
+    assert parsed["Service"]["User"] == [USER]
+    assert parsed["Service"]["WorkingDirectory"] == ["/home/someone/LTX-2"]
+    assert parsed["Service"]["ExecStart"] == ["/home/someone/LTX-2/.venv/bin/python -m ltx_server"]
+    link = root / "etc/systemd/system/multi-user.target.wants/ltx-server.service"
+    assert os.readlink(link) == "/etc/systemd/system/ltx-server.service"
+    env_file = root / "etc/render-agent/ltx-server.env"
+    assert env_file.read_bytes() == (DEPLOY / "ltx-server.env.example").read_bytes()
+    assert mode(env_file) == 0o644 and env_file.stat().st_uid == os.getuid()
+
+
+def test_installing_the_model_server_is_idempotent(root: Path) -> None:
+    install(root, "--ltx-root", "/opt/ltx")
+    before = tree(root)
+    again = install(root, "--ltx-root", "/opt/ltx")
+    assert again.returncode == 0 and tree(root) == before
+
+
+@pytest.mark.parametrize(
+    "value", ["relative/path", "/with space", "/semi;colon", "/pipe|x", "~/LTX-2"]
+)
+def test_a_bad_ltx_root_is_refused(root: Path, value: str) -> None:
+    result = install(root, "--ltx-root", value)
+    assert result.returncode == 1 and "--ltx-root" in result.stderr and not root.exists()
+
+
+def test_ltx_root_dry_run_installs_nothing(root: Path) -> None:
+    result = install(root, "--ltx-root", "/opt/ltx", "--dry-run")
+    assert result.returncode == 0 and "ltx-server.service" in result.stdout and not root.exists()
+
+
+def test_the_ltx_env_example_is_all_comments_and_has_no_urls() -> None:
+    from bootstrap import parse_env_file
+
+    text = (DEPLOY / "ltx-server.env.example").read_text()
+    assert parse_env_file(text) == {} and "://" not in text

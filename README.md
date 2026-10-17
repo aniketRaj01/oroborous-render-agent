@@ -12,7 +12,8 @@ This repository is public. It holds no secrets and no environment-specific ident
 | `tests/` | Tests (fakes for the job API, model server and S3) |
 | `deploy/` | systemd units and boot-time bootstrap |
 | `scripts/` | Developer helpers |
-| `docs/` | Design notes and the instance runbook |
+| `model_server/` | The model server that renders clips on the GPU instance (standard library shell + LTX binding) |
+| `docs/` | Design notes and the instance runbooks |
 
 ## Setup
 
@@ -76,6 +77,15 @@ fallback. The pieces:
 
 Setup, releasing, rollback, logs and the first-boot checklist are in
 [`docs/instance-runbook.md`](docs/instance-runbook.md).
+
+## Model server
+
+`model_server/` holds `ltx_server`, the local server that keeps the LTX pipeline loaded and renders one
+clip per request for the agent. Start with [`docs/model-server-runbook.md`](docs/model-server-runbook.md)
+(first test, logs, the RAM measurement and its decision table); the HTTP contract is
+[`docs/model-server-contract.md`](docs/model-server-contract.md) and what must be checked against the
+real LTX checkout is [`docs/ltx-binding-notes.md`](docs/ltx-binding-notes.md). No GPU is needed to test it:
+`RENDERER=fake python -m ltx_server` (with `model_server/` on `PYTHONPATH`) runs it with a fake renderer.
 
 ## Working on this repo
 
