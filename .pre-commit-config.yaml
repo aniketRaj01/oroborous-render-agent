@@ -15,8 +15,18 @@ repos:
     rev: 2ca41cc1372d1e939a6a879f18cdc19fc1cac1ce  # frozen: v8.30.0
     hooks:
       - id: gitleaks
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
+    hooks:
+      - id: shellcheck
   - repo: local
     hooks:
+      - id: requirements-lock-in-sync
+        name: requirements.lock matches uv.lock
+        entry: scripts/export_requirements.sh --check
+        language: system
+        files: ^(uv\.lock|pyproject\.toml|requirements\.lock)$
+        pass_filenames: false
       - id: mypy
         name: mypy --strict
         entry: uv run mypy

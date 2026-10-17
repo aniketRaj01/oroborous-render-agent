@@ -26,6 +26,7 @@ dev = [
     "pre-commit>=3.8",
     "pytest>=8.3",
     "ruff>=0.6",
+    "shellcheck-py>=0.10",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -34,7 +35,7 @@ packages = ["src/render_agent"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-src = ["src", "tests", "scripts"]
+src = ["src", "tests", "scripts", "deploy"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "C4", "S"]
@@ -42,11 +43,13 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "C4", "S"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S", "PT018"]
 "scripts/**" = ["S"]
+"deploy/**" = ["S"]
 
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["src", "tests", "scripts"]
+files = ["src", "tests", "scripts", "deploy"]
+mypy_path = "deploy:scripts:tests"
 python_version = "3.10"
 
 [tool.pydantic-mypy]
@@ -57,4 +60,4 @@ warn_required_dynamic_aliases = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers"
-pythonpath = ["tests"]
+pythonpath = ["tests", "deploy", "scripts"]

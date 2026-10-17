@@ -21,6 +21,11 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
+          # The output format of `uv export` is uv's: keep this in step with the version used to
+          # generate requirements.lock, or the sync check below fails for no real reason.
+          version: "0.13.1"
       - run: uv sync --frozen
+      - name: requirements.lock is in sync with uv.lock
+        run: scripts/export_requirements.sh --check
       - run: uv run pre-commit run --all-files
       - run: uv run pytest

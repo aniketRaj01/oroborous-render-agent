@@ -11,7 +11,7 @@ import pytest
 from conftest import valid_env
 from fakes.clock import FakeClock
 from fakes.fake_model_server import Reject
-from render_agent.__main__ import main
+from render_agent.cli import main
 from render_agent.model_server.models import GenerateRequest
 from rig import Rig, make_rig
 
