@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Protocol
@@ -24,3 +25,13 @@ class SystemClock:
 
     def sleep(self, seconds: float) -> None:
         time.sleep(seconds)
+
+
+class InterruptibleClock(SystemClock):
+    """Sleeps on an event, so a signal handler that sets the event ends the wait at once."""
+
+    def __init__(self, interrupt: threading.Event) -> None:
+        self._interrupt = interrupt
+
+    def sleep(self, seconds: float) -> None:
+        self._interrupt.wait(seconds)

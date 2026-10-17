@@ -64,14 +64,22 @@ The Job API URL is stored in an SSM SecureString (`/oroborous/render-agent/job-a
 
 Rules: `JOB_API_URL` must be https (http only for a loopback host); `JOB_API_SIGNING=none` is accepted only for loopback hosts; `AGENT_ID` is required, has no random default, and must be stable across restarts because the Job API resumes jobs only for the same agent id. Validation errors list setting names and error types, never values.
 
-## Operating decisions for the run loop (PR 2)
+## Operating decisions for the run loop
 
-- The work list is **in memory**, filled from `/v1/claim`. The Job API is the durable queue; there is no local queue file.
-- `AGENT_ID` is stable across restarts, so a restarted agent resumes its own jobs.
-- The first claim waits until the model server reports healthy (poll its `/health` about every 5 s).
-- When the in-memory list is empty, claim again. An empty claim means wait 60 s and retry.
-- Exit cleanly after N minutes of consecutive empty claims (a setting, default 5).
-- Never start a clip that cannot finish before the deadline.
+Implemented in `src/render_agent/runner.py`; run with `python -m render_agent run [--max-clips N]`. The model server's HTTP contract is in `docs/model-server-contract.md`.
+
+- The work list is **in memory**, filled from `/v1/claim` (`deadlineAt` = the run deadline, `maxPlans` = `MAX_PLANS_PER_CLAIM`, default 10). The Job API is the durable queue; there is no local queue file. Plans are worked in the order returned, clips by position.
+- `AGENT_ID` is stable across restarts, so a restarted agent resumes its own jobs. A SIGTERM or SIGINT stops cleanly after the current step: the agent does not call `fail` for an in-flight render (the same agent id resumes it), removes the scratch file and exits 0. An upload followed by its `complete` call counts as one step.
+- The first claim waits until the model server reports healthy (`/health` polled every `MODEL_SERVER_HEALTH_POLL_SECONDS`, default 5, for up to `MODEL_SERVER_READY_TIMEOUT_MINUTES`, default 20; exit 5 if it never is).
+- When the in-memory list is empty, claim again at once. An empty claim means wait `EMPTY_CLAIM_WAIT_SECONDS` (60) and retry. Exit 0 after `IDLE_EXIT_MINUTES` (5) of consecutive empty claims; finding work resets the timer. A claim that fails after the client's retries counts as an empty one.
+- Never start a clip that cannot finish before the run deadline (`RUN_DEADLINE_MINUTES`, default 55, measured from process start). The estimate is the mean of the last 5 clip times (start to complete) times 1.25, or `CLIP_TIME_ESTIMATE_SECONDS` (300) before any exist. No claim is made when a clip would not fit. Claimed clips that are not started are left to lease expiry and counted as skipped.
+- Per clip: `start`, render into `SCRATCH_DIR/<jobId>-<attempt>.mp4`, verify (exists, non-empty, `ftyp` at offset 4), upload to the bucket, region and key from the claim, `complete` with the verified size, delete the local file (always, success or failure).
+- Failure mapping to the Job API: model server `oom` is `oom`; any other model server error, a generate timeout or an unreachable server is `render_error`; verification problems are `verify_failed`; upload errors are `upload_error`. A failed clip never kills the run.
+- **Consecutive-failure rule:** after `MAX_CONSECUTIVE_FAILURES` (3) clip failures in a row (any completed clip resets the count) the run stops with exit 5. A model server that is unreachable mid-run counts as a clip failure.
+- `start` errors (`max_attempts_reached`, `wrong_state`, `not_your_lease`, `lease_expired`, `job_not_found`) drop the job: it is not failed, and it is ignored for the rest of the run even if a later claim returns it. `complete` errors: `object_missing` or `size_mismatch` re-upload once and retry once, else the job is failed as `upload_error`; `key_mismatch` is logged loudly and the job failed as `verify_failed`; `not_your_lease` and `lease_expired` drop the job. Transient `complete` failures are retried with backoff for up to `COMPLETE_RETRY_BUDGET_MINUTES` (10), never past the run deadline, then logged and the job given up.
+- A Job API auth error (HTTP 403) is systemic: exit 3 at once. Other unexpected errors exit 4 with a logged traceback.
+- Exit codes: 0 normal end (idle, deadline, `--max-clips`, signal), 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure (model server never ready, or too many consecutive failures). `--max-clips N` stops after N clips have finished (done or failed).
+- Logs: one line per event (job id, plan id, position, attempt, durations, outcome) and a final `run_summary` line (done, failed, skipped, dropped, runtime, reason). Prompts are never logged.
 
 ## Locked stack decisions: do not relitigate without discussion
 

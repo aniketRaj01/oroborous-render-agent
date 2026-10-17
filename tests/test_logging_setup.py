@@ -92,3 +92,13 @@ def test_filter_and_formatter_are_usable_standalone() -> None:
     record = logging.LogRecord("x", logging.INFO, "f", 1, "see %s", (KEY_ID,), None)
     assert RedactionFilter().filter(record)
     assert KEY_ID not in KeyValueFormatter().format(record)
+
+
+def test_http_libraries_do_not_log_request_urls() -> None:
+    _, stream = capture_logger("render_agent.test")
+    for name in ("httpx", "httpcore"):
+        assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+    logging.getLogger("httpx").info(
+        "HTTP Request: POST https://someid.lambda-url.us-east-1.on.aws/v1/claim"
+    )
+    assert stream.getvalue() == ""

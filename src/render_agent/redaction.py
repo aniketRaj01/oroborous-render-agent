@@ -22,3 +22,8 @@ def redact(text: str) -> str:
     text = _FUNCTION_URL_HOST.sub("<redacted-host>", text)
     text = _ACCESS_KEY_ID.sub("<redacted-key-id>", text)
     return _TOKEN_LIKE.sub("<redacted-token>", text)
+
+
+def safe_text(text: str, limit: int = 200) -> str:
+    """Single line, redacted and truncated: safe for an exception message or a log line."""
+    return redact(" ".join(text.split()))[:limit]
