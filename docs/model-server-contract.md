@@ -124,3 +124,40 @@ python scripts/fake_model_server.py --port 8000
 
 The fake writes a tiny file with a valid-looking `ftyp` box. It is **not** a playable video. See the
 docstring for the environment variables that add delay and inject failures.
+
+## Server implementation notes
+
+Clarifications added with the implementation in `model_server/ltx_server` (nothing above changed).
+
+- **Loading.** The server starts listening immediately and loads the model in the background.
+  `GET /health` answers `200 {"ok": true, "modelLoaded": false}` until the model is loaded **and** one
+  small warm-up clip has been rendered, and `true` only after that. While not ready,
+  `POST /generate` answers `503` with the usual envelope, code `render_error`, message
+  `"model is still loading"`; it also answers `503` while the server is shutting down.
+- **Order of checks for `/generate`.** Not ready (503), then body size and framing (413 or 400), then
+  validation (400), then single-flight (409 `busy`), then rendering.
+- **Validation (`400 invalid_request`).** `jobId` an integer; `prompt` a non-empty string; `params` an
+  object with only `width`, `height`, `numFrames`, `fps`, `seed`; `width` and `height` positive multiples of
+  64 (at most 4096); `numFrames` of the form 8k+1, from 9 up to a configurable maximum (481 by default);
+  `fps` greater than 0 and at most 60; `seed` a non-negative integer. Missing params take the server's
+  defaults (576, 1024, 361, 24, 42). All four top-level fields are required, and unknown fields or params are rejected.
+  `outputPath` must be absolute, end in `.mp4`, and, **after resolving symlinks**, lie inside the
+  server's allowed output directory (default `/tmp/render-agent`), whose parent directory must exist.
+- **Other status codes.** A body over the size limit is `413` and a missing `Content-Length` or a chunked
+  body is `400`, both with code `invalid_request`. A known path with the wrong method (`GET /generate`,
+  `POST /health`) is `405` with code `invalid_request`.
+- **Output.** The clip is rendered to a hidden temporary file in the same directory (a name ending in
+  `.partial.mp4`), flushed to disk, and renamed onto `outputPath`; it is removed on any failure, and
+  leftovers from a killed process are removed at start-up. `outputPath` in the response is the requested
+  string exactly. `durationSeconds` is measured with `ffprobe` when present, otherwise `numFrames / fps`.
+- **Errors.** Out-of-memory (GPU or host) answers `500 oom`; any other failure answers `500 render_error`
+  with the exception *type* only, because exception text can quote the prompt.
+- **Out-of-memory restart policy.** After every clip, successful or not, the server frees cached GPU
+  memory (never the weights). After an `oom` it also recovers the GPU cache. If `MAX_CONSECUTIVE_OOMS`
+  (default 2) out-of-memory failures happen in a row, the server answers that request and then exits with
+  status 75 so that systemd restarts it with clean memory. During the restart the agent sees refused
+  connections and failed clips, which its own consecutive-failure limit handles.
+- **Client disconnects.** A generation is not cancelled when the client disconnects; the server answers
+  `409 busy` until it finishes, as the section on timeouts allows.
+- **Shutdown.** On SIGTERM the server stops accepting connections and lets requests already running
+  finish (including writing their response) for up to `SHUTDOWN_GRACE_SECONDS` (30 by default), then exits.
