@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from render_agent.job_api.models import ErrorCode
-from render_agent.redaction import redact
+from render_agent.redaction import safe_text
 
-_MAX_MESSAGE_CHARS = 200
+__all__ = ["safe_text"]
 
 AUTH_HINT = (
     "The request was rejected before reaching the Job API (HTTP 403). Check that AWS credentials "
@@ -11,12 +11,6 @@ AUTH_HINT = (
     "lambda:InvokeFunction), JOB_API_REGION matches the function's region, and the system clock "
     "is correct."
 )
-
-
-def safe_text(text: str) -> str:
-    """Single line, redacted and truncated: safe to put in an exception message or a log line."""
-    one_line = " ".join(text.split())
-    return redact(one_line)[:_MAX_MESSAGE_CHARS]
 
 
 class JobApiError(Exception):

@@ -176,3 +176,79 @@ def test_url_never_appears_in_a_log_line(capsys: pytest.CaptureFixture[str]) -> 
     err = capsys.readouterr().err
     assert "topsecret1" not in err
     assert "msg=" in err
+
+
+# --- run loop settings -------------------------------------------------------------------------
+
+
+def test_run_loop_defaults() -> None:
+    settings = settings_from()
+    assert settings.model_server_url == "http://127.0.0.1:8000"
+    assert settings.model_server_health_poll_seconds == 5
+    assert settings.model_server_ready_timeout_minutes == 20
+    assert settings.model_server_generate_timeout_seconds == 1200
+    assert str(settings.scratch_dir) == "/tmp/render-agent"
+    assert settings.max_plans_per_claim == 10
+    assert settings.empty_claim_wait_seconds == 60
+    assert settings.idle_exit_minutes == 5
+    assert settings.run_deadline_minutes == 55
+    assert settings.clip_time_estimate_seconds == 300
+    assert settings.max_consecutive_failures == 3
+    assert settings.complete_retry_budget_minutes == 10
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:9000", "http://localhost:8000/", "http://[::1]:8000", "https://127.0.0.1"],
+)
+def test_model_server_url_accepts_loopback_hosts(url: str) -> None:
+    assert settings_from(MODEL_SERVER_URL=url).model_server_url == url.rstrip("/")
+
+
+@pytest.mark.parametrize(
+    ("url", "kind"),
+    [
+        ("http://example.invalid:8000", "model_server_not_loopback"),
+        ("http://10.0.0.5:8000", "model_server_not_loopback"),
+        ("http://0.0.0.0:8000", "model_server_not_loopback"),
+        ("ftp://127.0.0.1", "url_invalid"),
+        ("127.0.0.1:8000", "url_invalid"),
+        ("http://user:pw@127.0.0.1", "url_invalid"),
+        ("http://127.0.0.1:8000/?x=1", "url_invalid"),
+        ("http://127.0.0.1:notaport", "url_invalid"),
+    ],
+)
+def test_model_server_url_must_be_a_plain_loopback_url(url: str, kind: str) -> None:
+    assert problems({**valid_env(), "MODEL_SERVER_URL": url}) == {"MODEL_SERVER_URL": kind}
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ("MAX_PLANS_PER_CLAIM", "0"),
+        ("MAX_PLANS_PER_CLAIM", "51"),
+        ("MAX_CONSECUTIVE_FAILURES", "0"),
+        ("RUN_DEADLINE_MINUTES", "171"),
+        ("RUN_DEADLINE_MINUTES", "0"),
+        ("IDLE_EXIT_MINUTES", "-1"),
+        ("EMPTY_CLAIM_WAIT_SECONDS", "0"),
+        ("MODEL_SERVER_GENERATE_TIMEOUT_SECONDS", "0"),
+        ("MODEL_SERVER_HEALTH_POLL_SECONDS", "x"),
+        ("CLIP_TIME_ESTIMATE_SECONDS", "0"),
+        ("COMPLETE_RETRY_BUDGET_MINUTES", "0"),
+        ("MODEL_SERVER_READY_TIMEOUT_MINUTES", "0"),
+    ],
+)
+def test_run_loop_settings_are_bounds_checked(name: tuple[str, str]) -> None:
+    assert list(problems({**valid_env(), name[0]: name[1]})) == [name[0]]
+
+
+def test_max_plans_ceiling_is_50_and_deadline_ceiling_170() -> None:
+    assert settings_from(MAX_PLANS_PER_CLAIM="50", RUN_DEADLINE_MINUTES="170")
+
+
+def test_scratch_dir_must_be_absolute() -> None:
+    assert problems({**valid_env(), "SCRATCH_DIR": "relative/dir"}) == {
+        "SCRATCH_DIR": "path_not_absolute"
+    }
+    assert str(settings_from(SCRATCH_DIR="/var/tmp/x").scratch_dir) == "/var/tmp/x"

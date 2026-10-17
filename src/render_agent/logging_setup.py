@@ -71,3 +71,6 @@ def configure_logging(level: int = logging.INFO, stream: IO[str] | None = None) 
         root.removeHandler(existing)
     root.addHandler(handler)
     root.setLevel(level)
+    # httpx logs every request URL at INFO; the Job API URL must never reach a log line.
+    for noisy in ("httpx", "httpcore"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -74,6 +75,43 @@ class Settings(BaseSettings):
         default=0.5, ge=0, le=1, validation_alias="JOB_API_RETRY_JITTER"
     )
 
+    model_server_url: str = Field(
+        default="http://127.0.0.1:8000", validation_alias="MODEL_SERVER_URL"
+    )
+    model_server_health_poll_seconds: float = Field(
+        default=5.0, gt=0, validation_alias="MODEL_SERVER_HEALTH_POLL_SECONDS"
+    )
+    model_server_ready_timeout_minutes: float = Field(
+        default=20.0, gt=0, validation_alias="MODEL_SERVER_READY_TIMEOUT_MINUTES"
+    )
+    model_server_generate_timeout_seconds: float = Field(
+        default=1200.0, gt=0, validation_alias="MODEL_SERVER_GENERATE_TIMEOUT_SECONDS"
+    )
+    scratch_dir: Path = Field(
+        default=Path("/tmp/render-agent"),  # noqa: S108 - default location, created 0700
+        validation_alias="SCRATCH_DIR",
+    )
+    max_plans_per_claim: int = Field(
+        default=10, ge=1, le=50, validation_alias="MAX_PLANS_PER_CLAIM"
+    )
+    empty_claim_wait_seconds: float = Field(
+        default=60.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
+    )
+    idle_exit_minutes: float = Field(default=5.0, gt=0, validation_alias="IDLE_EXIT_MINUTES")
+    # The Job API ignores a deadline more than 180 minutes away, so stay well inside that.
+    run_deadline_minutes: float = Field(
+        default=55.0, gt=0, le=170, validation_alias="RUN_DEADLINE_MINUTES"
+    )
+    clip_time_estimate_seconds: float = Field(
+        default=300.0, gt=0, validation_alias="CLIP_TIME_ESTIMATE_SECONDS"
+    )
+    max_consecutive_failures: int = Field(
+        default=3, ge=1, validation_alias="MAX_CONSECUTIVE_FAILURES"
+    )
+    complete_retry_budget_minutes: float = Field(
+        default=10.0, gt=0, validation_alias="COMPLETE_RETRY_BUDGET_MINUTES"
+    )
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -106,6 +144,32 @@ class Settings(BaseSettings):
         else:
             raise PydanticCustomError("url_scheme_not_allowed", "https required")
         return SecretStr(value.get_secret_value().rstrip("/"))
+
+    @field_validator("model_server_url")
+    @classmethod
+    def _check_model_server_url(cls, value: str) -> str:
+        try:
+            parts = urlsplit(value)
+            host = parts.hostname
+            parts.port  # noqa: B018 - raises ValueError for a malformed port
+        except ValueError:
+            raise PydanticCustomError("url_invalid", "not a valid URL") from None
+        if parts.scheme not in ("http", "https") or not host:
+            raise PydanticCustomError("url_invalid", "not a valid URL")
+        if parts.username or parts.password or parts.query or parts.fragment:
+            raise PydanticCustomError("url_invalid", "URL must be plain host and port")
+        if not is_loopback_host(host):
+            raise PydanticCustomError(
+                "model_server_not_loopback", "the model server must be on a loopback host"
+            )
+        return value.rstrip("/")
+
+    @field_validator("scratch_dir")
+    @classmethod
+    def _check_scratch_dir(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise PydanticCustomError("path_not_absolute", "SCRATCH_DIR must be absolute")
+        return value
 
     @field_validator("job_api_region")
     @classmethod

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 
 START = datetime(2026, 10, 18, 6, 0, 0, tzinfo=timezone.utc)
@@ -12,6 +13,7 @@ class FakeClock:
         self._now = start
         self._monotonic = 0.0
         self.sleeps: list[float] = []
+        self.on_sleep: Callable[[], None] | None = None
 
     def now(self) -> datetime:
         return self._now
@@ -22,6 +24,8 @@ class FakeClock:
     def sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
         self.advance(seconds)
+        if self.on_sleep is not None:
+            self.on_sleep()
 
     def advance(self, seconds: float) -> None:
         self._now += timedelta(seconds=seconds)
