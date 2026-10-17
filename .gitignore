@@ -1,0 +1,36 @@
+# Secrets and local config: never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+agent.env
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime artefacts (clips, scratch, logs)
+*.mp4
+*.wav
+*.log
+tmp/
+scratch/
+local-media/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
