@@ -747,7 +747,7 @@ def test_main_rejects_unexpected_arguments() -> None:
 # --- AC2: a simulated history of boots ---------------------------------------------------------
 
 
-def test_full_history_of_boots(world: World, capsys: pytest.CaptureFixture[str]) -> None:
+def test_full_history_of_boots(world: World) -> None:
     """v0.1.0 installed, v0.1.1 broken, an outage, v0.2.0 with a changed lock, later releases."""
 
     def step(title: str, **overrides: object) -> tuple[str, str]:
@@ -801,4 +801,3 @@ def test_full_history_of_boots(world: World, capsys: pytest.CaptureFixture[str])
     assert tag == "v0.4.0" and world.releases() == ["v0.2.0", "v0.3.0", "v0.4.0"]
     assert len(world.venvs()) == 1  # only the second lock's environment is still used
     assert all(b.code == 0 for b in world.boots)
-    capsys.readouterr()

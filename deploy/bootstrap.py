@@ -362,8 +362,12 @@ class Bootstrap:
 
     @staticmethod
     def _last_line(result: CommandResult) -> str:
+        """The most telling line of a failed command's output (git's `fatal:` line if any)."""
         lines = [line for line in (result.stderr or result.stdout).splitlines() if line.strip()]
-        return sanitize(lines[-1]) if lines else f"exit status {result.returncode}"
+        if not lines:
+            return f"exit status {result.returncode}"
+        telling = [line for line in lines if line.startswith(("fatal:", "error:", "ERROR:"))]
+        return sanitize((telling or lines)[-1] if not telling else telling[0])
 
     def _temp_path(self, prefix: str) -> Path:
         self._tmp_counter += 1
