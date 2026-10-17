@@ -42,6 +42,23 @@ uv run python -m render_agent check             # one signed claim (maxPlans=1),
 
 `check` without `--dry-run` really claims work: any returned clips are leased to `AGENT_ID` until the printed `leaseExpiresAt`. Exit codes: 0 ok, 2 configuration error, 3 Job API or auth error, 4 unexpected error. Configuration sources and precedence are described in the Configuration section of `CLAUDE.md`.
 
+## The `run` command
+
+```sh
+uv run python -m render_agent run [--max-clips N]
+```
+
+Waits for the local model server, then claims work from the Job API and renders, uploads and reports it clip by clip until the queue is idle, the run deadline arrives, or a systemic failure stops it. Exit codes: 0 normal end, 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure. The model server's HTTP contract is in [`docs/model-server-contract.md`](docs/model-server-contract.md); the loop's behaviour and settings are described in `CLAUDE.md` ("Operating decisions for the run loop").
+
+For local experiments without a GPU:
+
+```sh
+uv run python scripts/fake_model_server.py        # stdlib-only stand-in; its "videos" are fake
+uv run python scripts/demo_fake_run.py            # the real loop against in-process fakes, on a fake clock
+```
+
+`run` really claims and completes jobs: only point it at a throwaway plan (see the PR notes for the manual test).
+
 ## Working on this repo
 
 Read [`CLAUDE.md`](CLAUDE.md) first. It defines the stack, the rules for never committing secrets or identifiers, the agent's behaviour requirements and the PR workflow.
