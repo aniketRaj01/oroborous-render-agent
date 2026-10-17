@@ -51,11 +51,33 @@ Before every commit: `git diff --staged` and read it. If you are about to paste 
 
 A pre-commit setup (ruff, mypy, plus a secret scanner such as gitleaks) must exist from the first PR and may not be bypassed (`--no-verify` is forbidden).
 
+## Configuration
+
+Settings are a typed `pydantic-settings` model (`src/render_agent/config.py`), validated at start-up. Sources, highest precedence first:
+
+1. The process environment.
+2. A dotenv-style config file whose path is in `RENDER_AGENT_CONFIG_FILE` (for example `/etc/render-agent/agent.env`). If it is readable by group or others, start-up fails.
+3. A local `.env` (gitignored) in the working directory.
+4. SSM Parameter Store under the prefix in `RENDER_AGENT_SSM_PREFIX`, read with `get_parameters_by_path` (`WithDecryption`) in the region from `RENDER_AGENT_SSM_REGION`. The last path segment maps to a setting (`.../job-api-url` is `JOB_API_URL`); unknown names are ignored.
+
+The Job API URL is stored in an SSM SecureString (`/oroborous/render-agent/job-api-url`, region via `RENDER_AGENT_SSM_REGION`) or in the root-only file `/etc/render-agent/agent.env`, and locally in `.env`. Never in the repo.
+
+Rules: `JOB_API_URL` must be https (http only for a loopback host); `JOB_API_SIGNING=none` is accepted only for loopback hosts; `AGENT_ID` is required, has no random default, and must be stable across restarts because the Job API resumes jobs only for the same agent id. Validation errors list setting names and error types, never values.
+
+## Operating decisions for the run loop (PR 2)
+
+- The work list is **in memory**, filled from `/v1/claim`. The Job API is the durable queue; there is no local queue file.
+- `AGENT_ID` is stable across restarts, so a restarted agent resumes its own jobs.
+- The first claim waits until the model server reports healthy (poll its `/health` about every 5 s).
+- When the in-memory list is empty, claim again. An empty claim means wait 60 s and retry.
+- Exit cleanly after N minutes of consecutive empty claims (a setting, default 5).
+- Never start a clip that cannot finish before the deadline.
+
 ## Locked stack decisions: do not relitigate without discussion
 
-- **Language:** Python 3.11+. Confirm against the Python version on the GPU instance before pinning, and document the choice in the README. No Python 2-isms, no untyped code.
+- **Language:** Python `>=3.10` (CI runs 3.10 and 3.12). Confirm against the Python version on the GPU instance and document the choice in the README. Use `from __future__ import annotations`; no 3.11-only features. No Python 2-isms, no untyped code.
 - **Packaging:** `pyproject.toml`, `src/` layout (`src/render_agent/`), one installable package. Dependencies pinned with a lock file. Use `uv` unless the first PR gives a concrete reason not to.
-- **Dependencies are minimal and justified.** Expected: `pydantic` v2 and `pydantic-settings` for models and config, `boto3` for S3, SSM and SigV4 signing, one HTTP client (`httpx`). Anything else needs a one-line reason in the PR. No frameworks (no FastAPI, no Celery, no asyncio task frameworks, no agent frameworks). The agent is a simple loop.
+- **Dependencies are minimal and justified.** Expected: `pydantic` v2 and `pydantic-settings` for models and config, `boto3` for S3, SSM and SigV4 signing, one HTTP client (`httpx`). Anything else needs a one-line reason in the PR. No frameworks (no FastAPI, no Celery, no asyncio task frameworks, no agent frameworks). The agent is a simple loop. There is no web framework and the agent opens no listener: it only makes outbound calls (Job API, localhost model server, S3, SSM).
 - **Concurrency:** the GPU renders one clip at a time. Keep the main loop sequential and simple. A background upload thread is allowed only if it is shown to matter; the default is render, then upload, then complete.
 - **Typing:** `mypy --strict` clean. Pydantic models at every external boundary: Job API responses, model-server responses, config. No bare `dict[str, Any]` flowing through business logic.
 - **Lint/format:** `ruff` (lint and format). Enforced pre-commit and in CI. Do not hand-format around it.
@@ -94,6 +116,13 @@ These come from the operating model, so they are not optional:
 - The agent runs as a systemd service with a restart policy; the bootstrap script and unit files live in `deploy/`. They contain no secrets and no real identifiers: those come from SSM or the on-disk config file at runtime.
 - Python dependencies must install reproducibly from the lock file. Decide in a PR whether they are baked into the machine image or installed at boot, and document the trade-off.
 - Nothing in this repo may assume the instance has internet access beyond GitHub, PyPI (if used at boot), and AWS endpoints.
+
+### Intended release design (PR 3; intent, not yet built)
+
+- The instance runs a git tag `vX.Y.Z` of this repository. The tag's commit must be an ancestor of `origin/main`.
+- The bootstrap records the commit SHA, hashes `requirements.lock`, and reinstalls dependencies (with `--require-hashes`) only when that hash changes.
+- A self-check runs before switching to a new release; the previous release is kept for fallback.
+- `agentVersion` is the tag plus the short SHA.
 
 ## Code style guardrails
 
