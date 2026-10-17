@@ -10,7 +10,7 @@ import pytest
 from conftest import FAKE_AGENT, FAKE_URL, valid_env
 from fakes.clock import FakeClock
 from fakes.fake_job_api import FakeJobApi
-from render_agent.__main__ import main
+from render_agent.cli import main
 
 SECRET_URL = "https://leakyid.lambda-url.us-east-1.on.aws"
 

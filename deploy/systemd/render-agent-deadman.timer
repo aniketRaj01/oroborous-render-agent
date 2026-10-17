@@ -1,0 +1,16 @@
+# OPT-IN dead-man timer: 65 minutes after boot, run render-agent-deadman.service, which powers the
+# instance off if /etc/render-agent/no-shutdown does not exist.
+#
+# Not enabled by default. Enable with `deploy/install.sh --enable-deadman` or
+#   systemctl enable --now render-agent-deadman.timer
+# Disable with `systemctl disable --now render-agent-deadman.timer`. To keep a machine up while you
+# work on it: touch /etc/render-agent/no-shutdown
+[Unit]
+Description=Oroborous render agent dead-man timer (opt-in)
+
+[Timer]
+OnBootSec=65min
+Unit=render-agent-deadman.service
+
+[Install]
+WantedBy=timers.target

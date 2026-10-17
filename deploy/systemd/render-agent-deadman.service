@@ -1,0 +1,9 @@
+# OPT-IN safety net: power the instance off. Never enabled by default; see render-agent-deadman.timer.
+[Unit]
+Description=Oroborous render agent dead-man switch (power the instance off)
+# Creating this file disables the switch, so a developer on SSH is never surprised.
+ConditionPathExists=!/etc/render-agent/no-shutdown
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl poweroff

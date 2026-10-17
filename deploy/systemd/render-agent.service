@@ -1,0 +1,54 @@
+# Oroborous render agent. Installed by deploy/install.sh, which replaces @SERVICE_USER@.
+[Unit]
+Description=Oroborous render agent
+# The model server unit does not exist yet; Wants= on a missing unit is harmless, and when it
+# exists this orders the agent after it. The agent also waits for the model server's /health.
+After=network-online.target ltx-server.service
+Wants=network-online.target ltx-server.service
+# Never spin: at most 5 starts in 30 minutes, then the unit stays failed until someone looks.
+StartLimitIntervalSec=1800
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+# Creates /run/render-agent for version.env, written by the bootstrap below.
+RuntimeDirectory=render-agent
+# agent.env: AGENT_ID and the SSM location of the Job API URL (no URL here). version.env:
+# AGENT_VERSION=<tag>+<short sha>, written by the bootstrap just before the agent starts.
+# systemd reads each file when it starts the process, so the agent sees the fresh version.env.
+EnvironmentFile=-/etc/render-agent/agent.env
+EnvironmentFile=-/run/render-agent/version.env
+Environment=PYTHONPATH=/opt/render-agent/current/src
+# No stray .env is read from here (the settings loader looks in the working directory).
+WorkingDirectory=/var/lib/render-agent
+
+# Fetch, verify and switch to the newest released tag, or fall back to the version that already
+# works. It exits non-zero only when nothing usable is installed. Its own time budget is 5 minutes;
+# TimeoutStartSec leaves room for the very first boot (a virtualenv built from PyPI on a slow
+# network) and still bounds a bootstrap that somehow ignores its budget.
+ExecStartPre=/usr/bin/python3 /opt/render-agent/bootstrap.py
+TimeoutStartSec=900
+ExecStart=/opt/render-agent/current-venv/bin/python -m render_agent run
+
+Restart=on-failure
+RestartSec=30
+# Exit 2 (configuration error), 3 (Job API auth error) and 5 (systemic failure) will not be fixed
+# by starting again; leave the unit failed instead of retrying blindly. Exit 0 (queue idle, deadline
+# reached) is a normal end and is not restarted either.
+RestartPreventExitStatus=2 3 5
+
+# SIGTERM makes the agent stop after its current step, but a render already in flight is not
+# interrupted (it can take up to 20 minutes). Waiting that long would delay a shutdown on a paid
+# GPU instance, and nothing is lost by cutting it short: the job is leased to this agent id and the
+# restarted agent resumes it. 120 s covers an upload and its complete call.
+TimeoutStopSec=120
+
+NoNewPrivileges=yes
+# PrivateTmp is deliberately NOT enabled. The agent's scratch directory (default
+# /tmp/render-agent) is where the separate model server writes the rendered clips, so both
+# processes must see the same /tmp.
+SyslogIdentifier=render-agent
+
+[Install]
+WantedBy=multi-user.target
