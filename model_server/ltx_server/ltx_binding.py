@@ -13,6 +13,7 @@ import gc
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -117,34 +118,40 @@ class LtxBinding:
         """Run the pipeline and encode video and audio to `output_path`; True if it has audio."""
         import torch
 
+        # VERIFY-ON-INSTANCE: 12
+        with torch.inference_mode():
+            output = self._call_pipeline(pipeline, request)
+            self._encode(output, request, output_path)
+        # VERIFY-ON-INSTANCE: 15
+        return bool(output.audio is not None)
+
+    def _call_pipeline(self, pipeline: Any, request: RenderRequest) -> Any:
+        # VERIFY-ON-INSTANCE: 8
+        return pipeline(
+            prompt=request.prompt,
+            seed=request.seed,
+            height=request.height,
+            width=request.width,
+            frame_rate=request.fps,
+            images=[],
+            num_frames=request.num_frames,
+        )
+
+    def _encode(self, output: Any, request: RenderRequest, output_path: Path) -> None:
         # VERIFY-ON-INSTANCE: 9
         from ltx_core.model.video_vae import get_video_chunks_number
         from ltx_pipelines.utils.media_io import encode_video
 
-        # VERIFY-ON-INSTANCE: 12
-        with torch.inference_mode():
-            # VERIFY-ON-INSTANCE: 8
-            output = pipeline(
-                prompt=request.prompt,
-                seed=request.seed,
-                height=request.height,
-                width=request.width,
-                frame_rate=request.fps,
-                images=[],
-                num_frames=request.num_frames,
-            )
-            # VERIFY-ON-INSTANCE: 9
-            encode_video(
-                video=output.video,
-                fps=encode_fps(request.fps),
-                audio=output.audio,
-                output_path=str(output_path),
-                video_chunks_number=get_video_chunks_number(
-                    output.num_frames, output.tiling_config
-                ),
-            )
-        # VERIFY-ON-INSTANCE: 15
-        return bool(output.audio is not None)
+        encode_video(
+            video=output.video,
+            fps=encode_fps(request.fps),
+            audio=output.audio,
+            output_path=str(output_path),
+            video_chunks_number=get_video_chunks_number(output.num_frames, output.tiling_config),
+        )
+
+    def last_phase_seconds(self) -> Mapping[str, float]:
+        return {}
 
     # --- memory --------------------------------------------------------------------------------
 

@@ -85,7 +85,8 @@ clip per request for the agent. Start with [`docs/model-server-runbook.md`](docs
 (first test, logs, the RAM measurement and its decision table); the HTTP contract is
 [`docs/model-server-contract.md`](docs/model-server-contract.md) and what must be checked against the
 real LTX checkout is [`docs/ltx-binding-notes.md`](docs/ltx-binding-notes.md). No GPU is needed to test it:
-`RENDERER=fake python -m ltx_server` (with `model_server/` on `PYTHONPATH`) runs it with a fake renderer.
+`RENDERER=fake python -m ltx_server` (with `model_server/` on `PYTHONPATH`) runs it with a fake renderer. `RENDER_MODE=resident` builds each LTX model once and keeps it in memory
+(opt-in until verified on the instance; see the runbook's "Render modes").
 
 ## Working on this repo
 

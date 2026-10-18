@@ -11,7 +11,7 @@ def test_defaults_match_the_documented_ones() -> None:
     settings = load_settings({})
     assert settings == Settings()
     assert (settings.host, settings.port, settings.renderer) == ("127.0.0.1", 8000, "ltx")
-    assert settings.offload_mode == "cpu" and settings.quantization == "fp8-cast"
+    assert settings.offload_mode == "none" and settings.quantization == "fp8-cast"
     assert settings.models_subdir == "models/ltx-2.5" and settings.ltx_root == Path("~/LTX-2")
     assert str(settings.allowed_output_dir) == "/tmp/render-agent"
     assert (settings.default_width, settings.default_height, settings.default_num_frames) == (

@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -23,6 +24,8 @@ class Binding(Protocol):
 
     def generate(self, pipeline: Any, request: RenderRequest, output_path: Path) -> bool: ...
 
+    def last_phase_seconds(self) -> Mapping[str, float]: ...
+
     def free_gpu_cache(self) -> None: ...
 
     def is_out_of_memory(self, exc: BaseException) -> bool: ...
@@ -36,10 +39,13 @@ class LtxRenderer:
 
     def _bound(self) -> Binding:
         if self._binding is None:
-            from ltx_server.ltx_binding import LtxBinding  # imports no torch or ltx_* itself
-
-            self._binding = LtxBinding(self._settings)
+            self._binding = self._make_binding()
         return self._binding
+
+    def _make_binding(self) -> Binding:
+        from ltx_server.ltx_binding import LtxBinding  # imports no torch or ltx_* itself
+
+        return LtxBinding(self._settings)
 
     def load(self) -> None:
         if self._pipeline is not None:
@@ -93,6 +99,7 @@ class LtxRenderer:
             num_frames=request.num_frames,
             fps=request.fps,
             has_audio=has_audio,
+            phase_seconds=binding.last_phase_seconds(),
         )
 
     def after_clip(self) -> None:

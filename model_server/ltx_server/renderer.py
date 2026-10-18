@@ -35,6 +35,7 @@ class RenderResult:
     num_frames: int
     fps: float
     has_audio: bool
+    phase_seconds: Mapping[str, float] = field(default_factory=dict)
 
 
 class Renderer(Protocol):

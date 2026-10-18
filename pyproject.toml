@@ -54,8 +54,8 @@ mypy_path = "deploy:scripts:tests:model_server:model_server/tools"
 python_version = "3.10"
 
 [[tool.mypy.overrides]]
-# torch and LTX-2 exist only on the GPU instance; the binding imports them lazily.
-module = ["torch", "torch.*", "ltx_core", "ltx_core.*", "ltx_pipelines", "ltx_pipelines.*"]
+# torch, LTX-2, av and numpy exist only in the GPU instance's LTX virtualenv; they are imported lazily.
+module = ["torch", "torch.*", "ltx_core", "ltx_core.*", "ltx_pipelines", "ltx_pipelines.*", "av", "numpy"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]

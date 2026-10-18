@@ -16,6 +16,10 @@ from ltx_server.server import ServerApp
 def build_renderer(settings: Settings, environ: Mapping[str, str]) -> Renderer:
     if settings.renderer == "fake":
         return FakeRenderer.from_env(environ)
+    if settings.render_mode == "resident":
+        from ltx_server.resident_renderer import ResidentLtxRenderer
+
+        return ResidentLtxRenderer(settings)
     from ltx_server.ltx_renderer import LtxRenderer  # imports no torch or ltx_* until load()
 
     return LtxRenderer(settings)

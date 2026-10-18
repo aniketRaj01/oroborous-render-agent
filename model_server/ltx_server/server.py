@@ -20,7 +20,7 @@ from types import FrameType
 from typing import NamedTuple, cast
 
 from ltx_server.config import LOOPBACK_HOSTS, Settings
-from ltx_server.logs import event
+from ltx_server.logs import event, phase_fields
 from ltx_server.output import commit, remove_quietly, remove_stale_temp_files, temp_path_for
 from ltx_server.probe import probe_duration
 from ltx_server.renderer import Renderer, RendererOutOfMemory, RenderRequest
@@ -259,6 +259,7 @@ class ServerApp:
             render_s=round(render_seconds, 1),
             duration_s=round(duration, 2),
             bytes=size,
+            **phase_fields(result.phase_seconds),
         )
         return Response(
             200,
