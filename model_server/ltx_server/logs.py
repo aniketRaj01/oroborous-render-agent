@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import sys
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import IO
 
@@ -24,6 +25,13 @@ def event(level: int, name: str, **fields: object) -> None:
         logger.log(
             level, " ".join([f"event={name}", *(f"{k}={_format(v)}" for k, v in fields.items())])
         )
+
+
+def phase_fields(seconds: Mapping[str, float]) -> dict[str, str]:
+    """`phases=name=1.2,other=3.4` for a log event; empty when a renderer reports no phases."""
+    if not seconds:
+        return {}
+    return {"phases": ",".join(f"{name}={value:.1f}" for name, value in seconds.items())}
 
 
 class _Formatter(logging.Formatter):

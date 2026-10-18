@@ -37,7 +37,7 @@ def test_items_are_numbered_without_gaps() -> None:
 
 def test_markers_only_appear_in_the_ltx_facing_modules() -> None:
     where = {location.split(":")[0] for places in markers().values() for location in places}
-    assert where <= {"ltx_binding.py", "ltx_renderer.py"}
+    assert where <= {"ltx_binding.py", "ltx_renderer.py", "resident_binding.py"}
 
 
 def test_every_item_names_its_code_the_files_to_open_and_what_to_confirm() -> None:

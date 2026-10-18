@@ -36,6 +36,9 @@ class FakeBinding:
     fail: BaseException | None = None
     audio: bool = True
 
+    def last_phase_seconds(self) -> dict[str, float]:
+        return {}
+
     def prepare_environment(self) -> None:
         self.events.append("prepare")
 
@@ -157,7 +160,7 @@ def test_the_pipeline_gets_paths_quantization_offload_and_registry_from_settings
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = install(monkeypatch)
-    binding_for(tmp_path, offload_mode="cpu").build_pipeline()
+    binding_for(tmp_path, offload_mode="cpu", use_registry=True).build_pipeline()
     (built,) = calls.constructed
     paths = built["model_paths"]
     root = tmp_path / "models/ltx-2.5"

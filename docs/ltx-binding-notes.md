@@ -1,6 +1,6 @@
 # LTX binding: what to verify on the instance
 
-`model_server/ltx_server/ltx_binding.py` is the only file that touches torch or LTX-2. It was
+`model_server/ltx_server/ltx_binding.py` (pipeline mode) and `resident_binding.py` (resident mode) are the only files that touch torch or LTX-2. It was
 written from the **public** LTX-2 source and has never been run against a real checkout (there is no
 GPU, torch or LTX where it was written). Every line that depends on something not yet confirmed is
 marked `# VERIFY-ON-INSTANCE: N` in the code, and `N` is the item number below. A test
@@ -240,3 +240,93 @@ confirm, and what to change if it is different. Tick them off in order.
   (how `encode_video` handles `audio`).
 - **Confirm:** `ffprobe -show_streams clip.mp4` lists an audio stream and the response says `true`.
 - **If different:** probe the file for an audio stream instead.
+
+## Resident mode (`RENDER_MODE=resident`): items 16 to 22
+
+`resident_binding.py` builds every model once and keeps it in memory, then runs LTX's own
+`DistilledPipeline.__call__` with its block objects replaced by stand-ins that hand out the resident
+models. It was written from the same commit as above and has not been run. Do items 1 to 15 first
+(it reuses that code), then these. Open `packages/ltx-pipelines/src/ltx_pipelines/utils/blocks.py`,
+`.../distilled.py`, `.../chunks/` and `packages/ltx-core/src/ltx_core/loader/single_gpu_model_builder.py`.
+
+### 16. Constructing `DistilledPipeline` reads no weights
+
+- **Assumption:** the constructor only creates builders (and reads safetensors headers), so it is cheap
+  and the models can then be built one by one.
+- **Code:** `ResidentBinding.build_pipeline`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/distilled.py` (`DistilledPipeline.__init__`).
+- **Confirm:** with `RENDER_MODE=resident`, the `phase` log line for `load_gemma` comes after the
+  constructor returns, and constructing takes seconds and no RAM growth.
+- **If different:** build the blocks by hand instead of through the pipeline constructor.
+
+### 17. The private builder attributes used to build each model once
+
+- **Assumption:** these exist and build what their names say: `prompt_encoder._text_encoder_builder`,
+  `prompt_encoder._build_embeddings_processor()`, `stage._build_transformer()` (an `X0Model`, quantized),
+  `upsampler._encoder_builder` / `_upsampler_builder`, `video_decoder._prepared_builder()`,
+  `audio_decoder._decoder_builder` / `_vocoder_builder`. (`blocks.py`: `PromptEncoder`, `DiffusionStage`,
+  `VideoUpsampler`, `VideoDecoder`, `AudioDecoder`.) The vocoder dtype is bf16 here; LTX uses fp32 only on MPS.
+- **Code:** `Resident.load`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/blocks.py` (`PromptEncoder`, `DiffusionStage`, `VideoUpsampler`, `VideoDecoder`, `AudioDecoder`).
+- **Confirm:** `load` finishes; `nvidia-smi` shows about 22 GB (fp8 transformer) plus a few GB; the
+  server RSS shows about 24 GB (Gemma). The `phase` lines for `load_gemma`, `load_transformer` and `load_small_models` are in the journal.
+- **If different:** rename the attribute; the builders are underscore-private, so a newer LTX may move them.
+
+### 18. Replacing the blocks on the pipeline object is honoured
+
+- **Assumption:** `DistilledPipeline.__call__` reaches the models only through `self.prompt_encoder`,
+  `self.stage` (via `stage._transformer_ctx(**kwargs)`), `self.upsampler`, `self.video_decoder` and
+  `self.audio_decoder`, with these call shapes: `prompt_encoder([prompt], enhance_first_prompt=,
+  enhance_static_cache=, enhance_prompt_image=)`, `upsampler(latent)`, `video_decoder(latent,
+  tiling_config, generator, dtype=, keyframes=)`, `audio_decoder(latent)`; `video_decoder.checkpoint_path`
+  and `.diffvae_optimization` are read before decoding.
+- **Code:** `Resident.install` and the four stand-in classes.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/distilled.py` (`__call__`, `stream_chunks`) and `packages/ltx-pipelines/src/ltx_pipelines/chunks/operators.py` (`denoise_chunks`, `spatially_upsample_chunks`, `decode_chunks`).
+- **Confirm:** one clip renders in resident mode and the journal has `stage_1`, `upsample`, `stage_2`,
+  `decode_video`, `decode_audio` phases and no "Building transformer" lines from LTX.
+- **If different:** match the new call shapes in the stand-ins; do not copy LTX logic into them.
+
+### 19. Moving a built model between host and GPU by re-pointing `.data`
+
+- **Assumption:** `tensor.data = tensor.data.to(device)` for every parameter and buffer moves a built
+  model (the fp8 transformer and Gemma) without rebuilding it, keeps its dtype (fp8 stays fp8) and
+  leaves forward hooks and quantization wrappers working; the fp8 transformer has no tensors that must
+  stay on one device.
+- **Code:** `Resident.transformer_to_host`, `transformer_to_gpu`, `gemma_to_gpu`, `gemma_to_host`.
+- **Open:** `packages/ltx-core/src/ltx_core/quantization/` (the fp8-cast policy) and `packages/ltx-pipelines/src/ltx_pipelines/utils/gpu_model.py`.
+- **Confirm:** the `park_transformer` / `unpark_transformer` / `gemma_to_gpu` phase lines take seconds
+  (not the tens of seconds a rebuild takes), no weight file is read after `ready` (watch `iostat` or
+  `strace -e openat` on the server), and clip 2 gives a correct picture.
+- **If different:** use `module.to(device)` on the whole module instead (same effect, new tensors), and
+  check the quantization policy's module ops for device-bound state.
+
+### 20. Pinned host memory for Gemma
+
+- **Assumption:** `pin_memory()` on 24 GB of tensors succeeds under `LimitMEMLOCK=infinity` and
+  `MemoryMax=55G`, and speeds up `gemma_to_gpu`.
+- **Code:** `Resident._pin_gemma`.
+- **Open:** nothing in LTX; check `ulimit -l` in the unit (`LimitMEMLOCK=infinity`) and the `gemma_host_copy` log line (the `torch` pin call).
+- **Confirm:** the `gemma_host_copy` line says `pinned=True`; if it says `pinned=False` the server carried on
+  unpinned (slower copies, still correct).
+- **If different:** nothing to change unless the pin makes RSS exceed the budget; then drop the pin call.
+
+### 21. Gemma built on the CPU and used through `encode`
+
+- **Assumption:** the text encoder builder can build on `torch.device("cpu")`, and the module has
+  `encode(prompts)` returning `(hidden_states, mask)` pairs that `embeddings_processor.process_hidden_states`
+  accepts (`PromptEncoder.__call__` in `blocks.py`).
+- **Code:** `Resident.load` (`load_gemma`), `_PromptEncoder.__call__`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/blocks.py` (`PromptEncoder.__call__`, `_build_text_encoder`).
+- **Confirm:** `encode_text` runs on the GPU after `gemma_to_gpu` with no device-mismatch error.
+- **If different:** build Gemma on the GPU at load, then move it to the host once.
+
+### 22. Upsampler, video decoder and audio decoder entry points
+
+- **Assumption:** `ltx_core.model.upsampler.upsample_video(latent=, video_encoder=, upsampler=)`,
+  `ltx_core.model.audio_vae.decode_audio(latent, decoder, vocoder)` and
+  `video_decoder.decode_video(latent, tiling_config, generator, **extra)` exist as `blocks.py` uses them.
+- **Code:** `_Upsampler`, `_AudioDecoder`, `_VideoDecoder` in `resident_binding.py`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/blocks.py` (`VideoUpsampler.__call__`, `VideoDecoder.__call__`, `AudioDecoder.__call__`).
+- **Confirm:** step 0 style import check, then one clip. Compare with pipeline mode using
+  `model_server/tools/compare_clips.py`.
+- **If different:** only the import lines and argument names change.

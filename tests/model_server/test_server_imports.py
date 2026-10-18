@@ -12,7 +12,8 @@ import pytest
 SERVER_DIR = Path(__file__).resolve().parents[2] / "model_server"
 PACKAGE = SERVER_DIR / "ltx_server"
 BINDING = "ltx_binding.py"
-SHELL_MODULES = sorted(p for p in PACKAGE.glob("*.py") if p.name != BINDING)
+BINDINGS = {BINDING, "resident_binding.py"}
+SHELL_MODULES = sorted(p for p in PACKAGE.glob("*.py") if p.name not in BINDINGS)
 TOOLS = sorted((SERVER_DIR / "tools").glob("*.py"))
 
 
@@ -29,13 +30,15 @@ def imported_modules(path: Path) -> set[str]:
 @pytest.mark.parametrize("path", [*SHELL_MODULES, *TOOLS], ids=lambda p: p.name)
 def test_shell_modules_and_tools_import_only_the_standard_library(path: Path) -> None:
     allowed = set(sys.stdlib_module_names) | {"__future__", "ltx_server"}
+    if path.name == "compare_clips.py":
+        allowed |= {"av", "numpy"}  # the LTX virtualenv has both; imported inside functions only
     assert imported_modules(path) <= allowed, imported_modules(path) - allowed
 
 
 def test_torch_and_ltx_are_named_only_in_the_binding_module() -> None:
     forbidden = ("torch", "ltx_core", "ltx_pipelines")
     for path in PACKAGE.glob("*.py"):
-        if path.name == BINDING:
+        if path.name in BINDINGS:
             continue
         found = [name for name in forbidden if name in imported_modules(path)]
         assert found == [], f"{path.name} imports {found}"
@@ -48,8 +51,9 @@ def test_torch_and_ltx_are_named_only_in_the_binding_module() -> None:
             assert not dynamic, f"{path.name} imports dynamically"
 
 
-def test_the_binding_imports_torch_and_ltx_only_inside_functions() -> None:
-    tree = ast.parse((PACKAGE / BINDING).read_text(encoding="utf-8"))
+@pytest.mark.parametrize("name", sorted(BINDINGS))
+def test_the_binding_imports_torch_and_ltx_only_inside_functions(name: str) -> None:
+    tree = ast.parse((PACKAGE / name).read_text(encoding="utf-8"))
     top_level = {
         alias.name.split(".")[0]
         for node in tree.body
@@ -79,6 +83,7 @@ sys.meta_path.insert(0, Blocker())
 import ltx_server, ltx_server.config, ltx_server.request, ltx_server.output, ltx_server.probe
 import ltx_server.logs, ltx_server.renderer, ltx_server.server, ltx_server.__main__
 import ltx_server.ltx_renderer, ltx_server.ltx_binding
+import ltx_server.resident_renderer, ltx_server.resident_binding
 from ltx_server.config import load_settings
 from ltx_server.renderer import FakeRenderer
 from ltx_server.server import ServerApp

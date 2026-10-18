@@ -8,6 +8,7 @@ from pathlib import Path
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 OFFLOAD_MODES = ("cpu", "disk", "none")
 RENDERERS = ("ltx", "fake")
+RENDER_MODES = ("pipeline", "resident")
 MAX_DIMENSION = 4096
 
 
@@ -26,9 +27,11 @@ class Settings:
     renderer: str = "ltx"
     ltx_root: Path = Path("~/LTX-2")
     models_subdir: str = "models/ltx-2.5"
-    offload_mode: str = "cpu"
+    render_mode: str = "pipeline"
+    park_transformer_for_decode: bool = True
+    offload_mode: str = "none"
     quantization: str = "fp8-cast"
-    use_registry: bool = True
+    use_registry: bool = False
     allowed_output_dir: Path = Path("/tmp/render-agent")
     default_width: int = 576
     default_height: int = 1024
@@ -109,6 +112,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     if Path(models_subdir).is_absolute() or ".." in Path(models_subdir).parts:
         problems.append("MODELS_SUBDIR must be a relative path without '..'")
         models_subdir = defaults.models_subdir
+    render_mode = text("RENDER_MODE", defaults.render_mode, RENDER_MODES)
     offload = text("OFFLOAD_MODE", defaults.offload_mode, OFFLOAD_MODES)
     quantization = text("QUANTIZATION", defaults.quantization)
     if not quantization.replace("-", "").isalnum():
@@ -151,6 +155,10 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         renderer=renderer,
         ltx_root=ltx_root,
         models_subdir=models_subdir,
+        render_mode=render_mode,
+        park_transformer_for_decode=flag(
+            "PARK_TRANSFORMER_FOR_DECODE", defaults.park_transformer_for_decode
+        ),
         offload_mode=offload,
         quantization=quantization,
         use_registry=flag("USE_REGISTRY", defaults.use_registry),
