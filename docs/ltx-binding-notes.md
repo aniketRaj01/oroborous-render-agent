@@ -330,3 +330,41 @@ models. It was written from the same commit as above and has not been run. Do it
 - **Confirm:** step 0 style import check, then one clip. Compare with pipeline mode using
   `model_server/tools/compare_clips.py`.
 - **If different:** only the import lines and argument names change.
+
+## First-frame image conditioning: items 23 and 24
+
+A request may carry `conditionImagePath` and `conditionStrength` (see the contract's implementation notes).
+Without an image the pipeline call is unchanged (`images=[]`).
+
+### 23. The element type of the `images` argument
+
+- **Assumption:** `DistilledPipeline.__call__(..., images: list[ImageConditioningInput], ...)` takes
+  `ltx_pipelines.utils.types.ImageConditioningInput`, a `NamedTuple(path: str, frame_idx: int, strength:
+  float, crf: int | None = None)`; frame 0 is the first frame; leaving `crf` unset lets the pipeline fill in
+  the value that matches the checkpoint (`ImageConditioner.resolve_crf`); an image whose size differs from the
+  render size is resized by the library (`resize_and_center_crop`: fill, then centre-crop) at half size for
+  stage 1 and full size for stage 2. Read at commit `be6d6d0a69d11a0a399c462ed92606692e5f8697`.
+- **Code:** `LtxBinding._condition_images` in `ltx_binding.py`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/types.py` (`ImageConditioningInput`),
+  `packages/ltx-pipelines/src/ltx_pipelines/distilled.py` (the `images` argument of `__call__`, `_prepare_run`),
+  `packages/ltx-pipelines/src/ltx_pipelines/chunks/conditionings.py` (`image_conditionings_for_chunk`).
+- **Confirm:** on the instance, `python -c "from ltx_pipelines.utils.types import ImageConditioningInput as I;
+  print(I._fields)"` prints `('path', 'frame_idx', 'strength', 'crf')`; a request with a `conditionImagePath` renders
+  without a `TypeError`/`ValueError`, the first frame of the mp4 matches the image, and the `condition_image`
+  log line shows the image and render sizes.
+- **If different:** only `_condition_images` changes (field names or order, or a plain tuple in an older
+  LTX).
+
+### 24. Resident mode reuses the resident video encoder for the image
+
+- **Assumption:** `pipeline.image_conditioner` is called as `image_conditioner(fn)` and passes `fn` a built
+  `VideoEncoder` (the same builder as the upsampler's encoder), and `resolve_crf` is a method of it, so replacing
+  `__call__` only keeps the video-VAE encoder from being rebuilt from its weight file for every conditioned clip.
+- **Code:** `_ImageConditioner` and its line in `Resident.install` in `resident_binding.py`.
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/blocks.py` (`ImageConditioner`, `VideoUpsampler`),
+  `packages/ltx-pipelines/src/ltx_pipelines/distilled.py` (`_video_conditionings`).
+- **Confirm:** a conditioned clip in resident mode logs an `encode_condition_image` phase of well under a
+  second, and no model-build line from LTX; its output equals the pipeline-mode clip for the same image,
+  prompt and seed (`model_server/tools/compare_clips.py`).
+- **If different:** drop the replacement (the encoder is then built for each conditioned clip; correct, just
+  slower), or match the new call shape.

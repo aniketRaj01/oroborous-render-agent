@@ -26,6 +26,9 @@ class RenderRequest:
     num_frames: int
     fps: float
     seed: int
+    # First-frame image (frame 0) the clip starts from; None renders from the prompt alone.
+    condition_image_path: Path | None = None
+    condition_strength: float = 1.0
 
 
 @dataclass(frozen=True)

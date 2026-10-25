@@ -242,6 +242,10 @@ class Resident:
         pipeline.upsampler = _Upsampler(self)
         pipeline.video_decoder = _VideoDecoder(self, pipeline.video_decoder)
         pipeline.audio_decoder = _AudioDecoder(self)
+        # First-frame conditioning would otherwise build the video encoder from its weight file
+        # for every clip; the resident one (also used by the upsampler) is reused.
+        # VERIFY-ON-INSTANCE: 24
+        pipeline.image_conditioner = _ImageConditioner(self, pipeline.image_conditioner)
         pipeline.stage._transformer_ctx = self.transformer_ctx
 
     @contextmanager
@@ -295,6 +299,21 @@ class _Upsampler:
             return upsample_video(
                 latent=latent, video_encoder=r.video_encoder, upsampler=r.upsampler
             )
+
+
+class _ImageConditioner:
+    """Keeps the original's attributes (resolve_crf, ...); hands out the resident encoder."""
+
+    def __init__(self, resident: Resident, original: Any) -> None:
+        self._r = resident
+        self._original = original
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._original, name)
+
+    def __call__(self, fn: Any) -> Any:
+        with self._r.phases.phase("encode_condition_image"):
+            return fn(self._r.video_encoder)
 
 
 class _VideoDecoder:

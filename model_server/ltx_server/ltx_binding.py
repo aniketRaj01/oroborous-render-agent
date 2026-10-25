@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ltx_server.config import Settings
+from ltx_server.imageinfo import image_size
 from ltx_server.logs import event
 from ltx_server.renderer import RenderRequest
 
@@ -133,9 +134,40 @@ class LtxBinding:
             height=request.height,
             width=request.width,
             frame_rate=request.fps,
-            images=[],
+            images=self._condition_images(request),
             num_frames=request.num_frames,
         )
+
+    def _condition_images(self, request: RenderRequest) -> list[Any]:
+        """[] without a first-frame image (exactly the call made before images existed)."""
+        if request.condition_image_path is None:
+            return []
+        # VERIFY-ON-INSTANCE: 23
+        from ltx_pipelines.utils.types import ImageConditioningInput
+
+        size = image_size(request.condition_image_path)
+        event(
+            logging.INFO,
+            "condition_image",
+            path=str(request.condition_image_path),
+            image_width=size[0] if size else "unknown",
+            image_height=size[1] if size else "unknown",
+            render_width=request.width,
+            render_height=request.height,
+            same_aspect=(
+                size[0] * request.height == size[1] * request.width if size else "unknown"
+            ),
+            strength=request.condition_strength,
+        )
+        # The pipeline resizes (fills, then center-crops) the image to the render size, and
+        # fills in crf itself when it is left out.
+        return [
+            ImageConditioningInput(
+                path=str(request.condition_image_path),
+                frame_idx=0,
+                strength=request.condition_strength,
+            )
+        ]
 
     def _encode(self, output: Any, request: RenderRequest, output_path: Path) -> None:
         # VERIFY-ON-INSTANCE: 9
