@@ -115,6 +115,7 @@ class StubPipeline:
         self.video_decoder: Any = types.SimpleNamespace(
             _prepared_builder=lambda: Builder("video_decoder", "cuda", log), checkpoint_path="vae"
         )
+        self.image_conditioner: Any = types.SimpleNamespace()
         self.audio_decoder: Any = types.SimpleNamespace(
             _decoder_builder=Builder("audio_decoder", "cuda", log),
             _vocoder_builder=Builder("vocoder", "cuda", log),

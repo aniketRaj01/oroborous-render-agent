@@ -223,6 +223,14 @@ class ServerApp:
             frames=request.num_frames,
             fps=request.fps,
             seed=request.seed,
+            **(
+                {
+                    "condition_image": str(request.condition_image_path),
+                    "condition_strength": request.condition_strength,
+                }
+                if request.condition_image_path is not None
+                else {}
+            ),
         )
         temp = temp_path_for(request.final_path)
         started = time.monotonic()
@@ -236,6 +244,8 @@ class ServerApp:
                     num_frames=request.num_frames,
                     fps=request.fps,
                     seed=request.seed,
+                    condition_image_path=request.condition_image_path,
+                    condition_strength=request.condition_strength,
                 ),
                 temp,
             )

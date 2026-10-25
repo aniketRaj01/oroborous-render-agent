@@ -137,10 +137,10 @@ Clarifications added with the implementation in `model_server/ltx_server` (nothi
 - **Order of checks for `/generate`.** Not ready (503), then body size and framing (413 or 400), then
   validation (400), then single-flight (409 `busy`), then rendering.
 - **Validation (`400 invalid_request`).** `jobId` an integer; `prompt` a non-empty string; `params` an
-  object with only `width`, `height`, `numFrames`, `fps`, `seed`; `width` and `height` positive multiples of
+  object with only `width`, `height`, `numFrames`, `fps`, `seed`, `conditionStrength`; `width` and `height` positive multiples of
   64 (at most 4096); `numFrames` of the form 8k+1, from 9 up to a configurable maximum (481 by default);
   `fps` greater than 0 and at most 60; `seed` a non-negative integer. Missing params take the server's
-  defaults (576, 1024, 361, 24, 42). All four top-level fields are required, and unknown fields or params are rejected.
+  defaults (576, 1024, 361, 24, 42). The four fields `jobId`, `prompt`, `params`, `outputPath` are required, `conditionImagePath` is optional (below), and unknown fields or params are rejected.
   `outputPath` must be absolute, end in `.mp4`, and, **after resolving symlinks**, lie inside the
   server's allowed output directory (default `/tmp/render-agent`), whose parent directory must exist.
 - **Other status codes.** A body over the size limit is `413` and a missing `Content-Length` or a chunked
@@ -161,3 +161,25 @@ Clarifications added with the implementation in `model_server/ltx_server` (nothi
   `409 busy` until it finishes, as the section on timeouts allows.
 - **Shutdown.** On SIGTERM the server stops accepting connections and lets requests already running
   finish (including writing their response) for up to `SHUTDOWN_GRACE_SECONDS` (30 by default), then exits.
+- **Optional first-frame image (additive; the agent does not send it yet).** A request may add the top-level
+  field `conditionImagePath` and the param `conditionStrength`, so that a clip starts from a given picture
+  (for example the last frame of the previous clip) instead of from the prompt alone:
+
+  ```sh
+  curl -s localhost:8000/generate -H 'content-type: application/json' -d '{
+    "jobId": 2, "prompt": "exact prompt text",
+    "params": { "width": 1280, "height": 704, "numFrames": 121, "seed": 7, "conditionStrength": 1.0 },
+    "outputPath": "/tmp/render-agent/story-2.mp4",
+    "conditionImagePath": "/tmp/render-agent/story-1-last.png"
+  }'
+  ```
+
+  `conditionImagePath` is an absolute path to a regular, readable `.png`, `.jpg` or `.jpeg` file that exists
+  and, **after resolving symlinks**, lies inside the allowed output directory (the same rule as `outputPath`);
+  a path with a NUL byte or any other violation is `400 invalid_request`, and the message never quotes the
+  input. `conditionStrength` is a number greater than 0 and at most 1 (default 1.0); it is ignored without an
+  image. The image conditions frame 0. LTX resizes it to the render size (scaled to fill, then centre-cropped),
+  so an image with a different aspect ratio is cropped, not distorted; the server logs the image size and the
+  render size (`event=condition_image`, with the path, never the prompt). Without `conditionImagePath` the
+  request behaves exactly as before, and the start-up warm-up never uses an image. The model weights are not
+  reloaded for a conditioned clip.
