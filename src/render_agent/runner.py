@@ -10,6 +10,7 @@ from pathlib import Path
 from render_agent.clock import Clock
 from render_agent.config import Settings
 from render_agent.exit_codes import EXIT_AUTH, EXIT_OK, EXIT_SYSTEMIC
+from render_agent.frames import FfmpegFrameExtractor, FrameError, FrameExtractor, check_png
 from render_agent.job_api.client import JobApi
 from render_agent.job_api.errors import (
     AuthError,
@@ -22,6 +23,7 @@ from render_agent.job_api.errors import (
 )
 from render_agent.job_api.models import (
     Clip,
+    ClipUpload,
     CompleteUpload,
     FailErrorCode,
     Plan,
@@ -40,7 +42,7 @@ from render_agent.model_server.models import (
     RenderReport,
 )
 from render_agent.redaction import safe_text
-from render_agent.uploader import Uploader, UploadError
+from render_agent.uploader import DownloadError, Uploader, UploadError
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ COMPLETE_BACKOFF_BASE_SECONDS = 5.0
 COMPLETE_BACKOFF_MAX_SECONDS = 60.0
 FAIL_MESSAGE_CHARS = 500
 FTYP_OFFSET = 4
+FRAME_CONTENT_TYPE = "image/png"
 
 # Reasons a run ends. The exit code follows from the reason.
 REASON_IDLE = "idle"
@@ -80,6 +83,15 @@ class RunResult:
     skipped: int
     dropped: int
     runtime_seconds: float
+
+
+@dataclass
+class _Frame:
+    """A chained clip's last frame: the local PNG and where it goes in S3."""
+
+    path: Path
+    location: ClipUpload
+    size: int
 
 
 class _ClipFailure(Exception):
@@ -114,6 +126,7 @@ class Runner:
         clock: Clock,
         should_stop: Callable[[], bool] = lambda: False,
         max_clips: int | None = None,
+        frame_extractor: FrameExtractor | None = None,
     ) -> None:
         self._settings = settings
         self._job_api = job_api
@@ -122,7 +135,14 @@ class Runner:
         self._clock = clock
         self._should_stop = should_stop
         self._max_clips = max_clips
+        self._frame_extractor = frame_extractor or FfmpegFrameExtractor()
 
+        # Chained plans. Local PNG per (plan, position): the last frame of that clip, kept until
+        # the plan is finished with so the next clip needs no download.
+        self._frames: dict[tuple[int, int], Path] = {}
+        # plan id -> position of a chained clip that failed or was given up this run. Later chained
+        # clips of that plan have no valid start frame and are not started (until it succeeds).
+        self._blocked: dict[int, int] = {}
         self._work: deque[tuple[Plan, Clip]] = deque()
         # Jobs we gave up on this run. A later claim may return them again (we still hold the
         # lease); ignoring them keeps a persistently failing job from becoming a tight loop.
@@ -160,6 +180,8 @@ class Runner:
         except Exception:
             self._log_summary("unexpected_error")
             raise
+        finally:
+            self._release_frames()
         return self._finish(reason)
 
     # --- main loop -----------------------------------------------------------------------------
@@ -179,6 +201,9 @@ class Runner:
 
             if self._work:
                 plan, clip = self._work.popleft()
+                if self._is_blocked(plan, clip):
+                    self._skip_blocked(plan, clip)
+                    continue
                 stop_reason = self._process_clip(plan, clip)
                 if stop_reason is not None:
                     return self._abandon_work(stop_reason)
@@ -227,7 +252,7 @@ class Runner:
         added = 0
         for plan in response.plans:
             for clip in sorted(plan.clips, key=lambda c: c.position):
-                if clip.job_id not in self._given_up:
+                if clip.job_id not in self._given_up and not self._is_blocked(plan, clip):
                     self._work.append((plan, clip))
                     added += 1
         logger.info(
@@ -275,27 +300,34 @@ class Runner:
         started = self._clock.monotonic()
         output: Path | None = None
         attempt = 0
+        self._release_frames(keep_plan=plan.plan_id)
         try:
             attempt = self._start(clip, ids)
             output = self._settings.scratch_dir / f"{clip.job_id}-{attempt}.mp4"
+            start_image = self._prepare_start_image(plan, clip, ids)
             self._check_stop()
-            render = self._render(clip, output, ids, attempt)
+            render = self._render(clip, output, ids, attempt, start_image)
             self._check_stop()
             self._verify(output)
             self._check_stop()
             upload_started = self._clock.monotonic()
             size = self._upload(clip, output)
+            frame = self._extract_and_upload_frame(plan, clip, output, ids)
             upload_seconds = self._clock.monotonic() - upload_started
-            self._complete(clip, output, size, render, ids, attempt)
+            self._check_stop()
+            self._complete(clip, output, size, render, ids, attempt, frame)
         except _Dropped:
             self._give_up(clip)
+            self._block_chain(plan, clip)
         except _Interrupted:
             logger.info("clip_interrupted", extra={**ids, "attempt": attempt})
             return REASON_SIGNAL
         except _CompleteUnconfirmed:
             self._give_up(clip)
+            self._block_chain(plan, clip)
         except _ClipFailure as failure:
             self._report_failure(clip, failure, ids, attempt)
+            self._block_chain(plan, clip)
             if self._consecutive_failures >= self._settings.max_consecutive_failures:
                 logger.error(
                     "systemic_failure",
@@ -306,6 +338,7 @@ class Runner:
                 )
                 return REASON_CONSECUTIVE_FAILURES
         else:
+            self._chain_clip_done(plan, clip)
             duration = self._clock.monotonic() - started
             self._timings.append(duration)
             self._done += 1
@@ -350,7 +383,14 @@ class Runner:
         )
         return response.attempt
 
-    def _render(self, clip: Clip, output: Path, ids: dict[str, int], attempt: int) -> RenderReport:
+    def _render(
+        self,
+        clip: Clip,
+        output: Path,
+        ids: dict[str, int],
+        attempt: int,
+        start_image: Path | None = None,
+    ) -> RenderReport:
         request = GenerateRequest(
             job_id=clip.job_id,
             prompt=clip.prompt,
@@ -358,6 +398,7 @@ class Runner:
                 clip.params.model_dump(exclude_none=True) if clip.params else {}
             ),
             output_path=str(output),
+            condition_image_path=str(start_image) if start_image is not None else None,
         )
         try:
             response = self._model_server.generate(request)
@@ -414,6 +455,129 @@ class Runner:
         except UploadError as exc:
             raise _ClipFailure(FailErrorCode.UPLOAD_ERROR, str(exc)) from None
 
+    # --- chained clips -------------------------------------------------------------------------
+
+    def _frame_path(self, plan: Plan, name: str) -> Path:
+        # The real path: the model server accepts the image only inside its allowed output
+        # directory (the same directory as SCRATCH_DIR) after resolving symlinks.
+        return self._settings.scratch_dir.resolve() / f"p{plan.plan_id}-{name}.png"
+
+    def _prepare_start_image(self, plan: Plan, clip: Clip, ids: dict[str, int]) -> Path | None:
+        """The local start frame of a chained clip, or None for an ordinary clip."""
+        location = clip.start_image
+        if location is None:
+            return None
+        previous = (plan.plan_id, clip.position - 1)
+        kept = self._frames.get(previous)
+        if kept is not None and kept.is_file():
+            logger.info("start_frame_reused", extra=ids)
+            return kept
+        dest = self._frame_path(plan, f"start-{clip.position}")
+        started = self._clock.monotonic()
+        try:
+            size = self._uploader.download(
+                bucket=location.bucket, region=location.region, key=location.key, dest=dest
+            )
+            check_png(dest)
+        except (DownloadError, FrameError) as exc:
+            dest.unlink(missing_ok=True)
+            logger.warning(
+                "start_frame_missing", extra={**ids, "key": location.key, "error": str(exc)}
+            )
+            # Never render a chained clip from text alone: that silently breaks the chain.
+            raise _ClipFailure(
+                FailErrorCode.RENDER_ERROR,
+                f"start frame is missing or unreadable, so the clip was not rendered ({exc})",
+            ) from None
+        self._frames[previous] = dest
+        logger.info(
+            "start_frame_downloaded",
+            extra={
+                **ids,
+                "key": location.key,
+                "size_bytes": size,
+                "download_s": round(self._clock.monotonic() - started, 1),
+            },
+        )
+        return dest
+
+    def _extract_and_upload_frame(
+        self, plan: Plan, clip: Clip, output: Path, ids: dict[str, int]
+    ) -> _Frame | None:
+        """Last frame of the rendered clip: extracted, kept for the next clip, uploaded."""
+        location = clip.last_frame_upload
+        if location is None:
+            return None
+        dest = self._frame_path(plan, f"{clip.position}-last")
+        started = self._clock.monotonic()
+        try:
+            size = self._frame_extractor.extract_last_frame(output, dest)
+        except FrameError as exc:
+            raise _ClipFailure(
+                FailErrorCode.UPLOAD_ERROR, f"could not extract the last frame ({exc})"
+            ) from None
+        self._frames[(plan.plan_id, clip.position)] = dest
+        logger.info(
+            "frame_extracted",
+            extra={
+                **ids,
+                "size_bytes": size,
+                "extract_s": round(self._clock.monotonic() - started, 1),
+            },
+        )
+        frame = _Frame(dest, location, size)
+        frame.size = self._upload_frame(frame)
+        logger.info("frame_uploaded", extra={**ids, "key": location.key, "size_bytes": frame.size})
+        return frame
+
+    def _upload_frame(self, frame: _Frame) -> int:
+        try:
+            return self._uploader.upload(
+                frame.path,
+                bucket=frame.location.bucket,
+                region=frame.location.region,
+                key=frame.location.key,
+                content_type=FRAME_CONTENT_TYPE,
+            )
+        except UploadError as exc:
+            raise _ClipFailure(FailErrorCode.UPLOAD_ERROR, f"last frame: {exc}") from None
+
+    def _is_blocked(self, plan: Plan, clip: Clip) -> bool:
+        """A chained clip after one that failed: it would have no valid start frame."""
+        failed_at = self._blocked.get(plan.plan_id)
+        return failed_at is not None and clip.position > failed_at and clip.is_chained
+
+    def _skip_blocked(self, plan: Plan, clip: Clip) -> None:
+        self._skipped += 1
+        logger.info(
+            "clip_skipped",
+            extra={
+                "job_id": clip.job_id,
+                "plan_id": plan.plan_id,
+                "position": clip.position,
+                "reason": "earlier_clip_of_chained_plan_failed",
+            },
+        )
+
+    def _block_chain(self, plan: Plan, clip: Clip) -> None:
+        if clip.is_chained:
+            self._blocked[plan.plan_id] = min(
+                clip.position, self._blocked.get(plan.plan_id, clip.position)
+            )
+            self._release_frames()
+
+    def _chain_clip_done(self, plan: Plan, clip: Clip) -> None:
+        if self._blocked.get(plan.plan_id) == clip.position:
+            del self._blocked[plan.plan_id]
+        # The frame this clip started from has been used; its own frame stays for the next clip.
+        used = self._frames.pop((plan.plan_id, clip.position - 1), None)
+        if used is not None:
+            used.unlink(missing_ok=True)
+
+    def _release_frames(self, keep_plan: int | None = None) -> None:
+        for key in [k for k in self._frames if keep_plan is None or k[0] != keep_plan]:
+            self._frames.pop(key).unlink(missing_ok=True)
+
     # --- complete ------------------------------------------------------------------------------
 
     def _complete(
@@ -424,6 +588,7 @@ class Runner:
         render: RenderReport,
         ids: dict[str, int],
         attempt: int,
+        frame: _Frame | None = None,
     ) -> None:
         info = RenderInfo(**render.model_dump())
         retry_until = min(
@@ -440,6 +605,15 @@ class Runner:
                         bucket=clip.upload.bucket, key=clip.upload.key, size_bytes=size
                     ),
                     render=info,
+                    last_frame=(
+                        CompleteUpload(
+                            bucket=frame.location.bucket,
+                            key=frame.location.key,
+                            size_bytes=frame.size,
+                        )
+                        if frame is not None
+                        else None
+                    ),
                 )
                 return
             except (ObjectMissingError, SizeMismatchError) as exc:
@@ -451,6 +625,8 @@ class Runner:
                 reuploaded = True
                 logger.warning("complete_reupload", extra={**ids, "error_code": exc.code})
                 size = self._upload(clip, output)
+                if frame is not None:
+                    frame.size = self._upload_frame(frame)
             except KeyMismatchError:
                 logger.error("complete_key_mismatch", extra={**ids, "attempt": attempt})
                 raise _ClipFailure(

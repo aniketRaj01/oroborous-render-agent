@@ -6,6 +6,7 @@ from typing import TextIO
 
 from render_agent.clock import Clock
 from render_agent.config import Settings
+from render_agent.frames import ffmpeg_available
 from render_agent.job_api.client import JobApi
 
 DEFAULT_LEASE_MINUTES = 2
@@ -44,8 +45,16 @@ def run_claim(
         for clip in plan.clips:
             out.write(
                 f"    job {clip.job_id} position {clip.position} "
-                f"attempts {clip.attempts} resumed {str(clip.resumed).lower()}\n"
+                f"attempts {clip.attempts} resumed {str(clip.resumed).lower()}"
+                f"{' chained' if clip.is_chained else ''}\n"
             )
+    if any(clip.is_chained for plan in response.plans for clip in plan.clips) and (
+        not ffmpeg_available()
+    ):
+        out.write(
+            "\nWARNING: chained clips need ffmpeg to extract last frames and it was not found "
+            "(apt install ffmpeg).\n"
+        )
     if response.totals.clips:
         out.write(
             f"\nWARNING: {response.totals.clips} job(s) are now leased to {settings.agent_id} "

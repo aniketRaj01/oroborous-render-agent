@@ -39,6 +39,8 @@ class GenerateRequest(_Request):
     prompt: str = Field(repr=False)
     params: GenerateParams
     output_path: str
+    # First-frame image for chained clips; omitted from the body when None.
+    condition_image_path: str | None = None
 
     def to_json_bytes(self) -> bytes:
         return self.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")

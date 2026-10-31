@@ -111,6 +111,14 @@ class Clip(_Response):
     upload: ClipUpload
     attempts: int
     resumed: bool
+    # Chained clips only (absent or null otherwise): where to fetch this clip's start frame and
+    # where to put its last frame. Same shape as `upload`.
+    start_image: ClipUpload | None = None
+    last_frame_upload: ClipUpload | None = None
+
+    @property
+    def is_chained(self) -> bool:
+        return self.start_image is not None or self.last_frame_upload is not None
 
 
 class Plan(_Response):
@@ -175,6 +183,8 @@ class CompleteRequest(_Request):
     upload: CompleteUpload
     render: RenderInfo
     cost_inr: float | None = Field(default=None, ge=0)
+    # Sent only when the claim gave this clip a lastFrameUpload.
+    last_frame: CompleteUpload | None = None
 
 
 class PlanProgress(_Response):

@@ -10,14 +10,15 @@ from render_agent.config import ConfigError
 
 logger = logging.getLogger(__name__)
 
-_CLIP_FILE = re.compile(r"^\d+-\d+\.mp4$")
+_CLIP_FILE = re.compile(r"^(\d+-\d+\.mp4|p\d+-(\d+-last|start-\d+)\.png)$")
 
 
 def prepare_scratch_dir(path: Path) -> None:
     """Create the directory 0700 and remove clip files left over from a previous run.
 
-    Only files named <jobId>-<attempt>.mp4 are removed, so a mistaken SCRATCH_DIR cannot
-    delete anything else.
+    Only files named <jobId>-<attempt>.mp4, or the frames of chained clips
+    (p<planId>-<n>-last.png, p<planId>-start-<n>.png), are removed, so a mistaken SCRATCH_DIR
+    cannot delete anything else.
     """
     try:
         path.mkdir(mode=0o700, parents=True, exist_ok=True)

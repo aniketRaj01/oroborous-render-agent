@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -21,9 +22,19 @@ class UploadError(Exception):
     """The clip is not verifiably in S3. Messages carry error codes only, never bucket names."""
 
 
+class DownloadError(Exception):
+    """The object could not be fetched. Messages carry error codes only, never bucket names."""
+
+
 class Uploader(Protocol):
-    def upload(self, path: Path, *, bucket: str, region: str, key: str) -> int:
+    def upload(
+        self, path: Path, *, bucket: str, region: str, key: str, content_type: str = CONTENT_TYPE
+    ) -> int:
         """Upload `path` to the given location and return the verified size in bytes."""
+        ...
+
+    def download(self, *, bucket: str, region: str, key: str, dest: Path) -> int:
+        """Fetch the object into `dest` (mode 0644, written atomically); return its size."""
         ...
 
 
@@ -51,7 +62,9 @@ class S3Uploader:
             self._clients[region] = self._client_factory(region)
         return self._clients[region]
 
-    def upload(self, path: Path, *, bucket: str, region: str, key: str) -> int:
+    def upload(
+        self, path: Path, *, bucket: str, region: str, key: str, content_type: str = CONTENT_TYPE
+    ) -> int:
         try:
             size = path.stat().st_size
         except OSError:
@@ -62,7 +75,7 @@ class S3Uploader:
         try:
             with path.open("rb") as body:
                 client.put_object(
-                    Bucket=bucket, Key=key, Body=body, ContentLength=size, ContentType=CONTENT_TYPE
+                    Bucket=bucket, Key=key, Body=body, ContentLength=size, ContentType=content_type
                 )
             remote_size = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
         except ClientError as exc:
@@ -72,4 +85,33 @@ class S3Uploader:
             raise UploadError(f"S3 request failed ({type(exc).__name__})") from None
         if remote_size != size:
             raise UploadError("object size in S3 differs from the local file after upload")
+        return size
+
+    def download(self, *, bucket: str, region: str, key: str, dest: Path) -> int:
+        client = self._client(region)
+        partial = dest.with_name(f"{dest.name}.partial")
+        try:
+            body = client.get_object(Bucket=bucket, Key=key)["Body"]
+            try:
+                with partial.open("wb") as handle:
+                    for chunk in body.iter_chunks(chunk_size=1 << 20):
+                        handle.write(chunk)
+            finally:
+                body.close()
+            size = partial.stat().st_size
+            if size == 0:
+                raise DownloadError("downloaded object is empty")
+            # The model server reads this file and may run as another user.
+            os.chmod(partial, 0o644)
+            os.replace(partial, dest)
+        except ClientError as exc:
+            partial.unlink(missing_ok=True)
+            code = exc.response.get("Error", {}).get("Code", "unknown")
+            raise DownloadError(f"S3 request failed ({code})") from None
+        except (BotoCoreError, OSError) as exc:
+            partial.unlink(missing_ok=True)
+            raise DownloadError(f"S3 request failed ({type(exc).__name__})") from None
+        except DownloadError:
+            partial.unlink(missing_ok=True)
+            raise
         return size

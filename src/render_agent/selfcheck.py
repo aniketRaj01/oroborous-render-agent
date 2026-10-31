@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import pkgutil
 from typing import TextIO
 
 import render_agent
 from render_agent.exit_codes import EXIT_OK, EXIT_UNEXPECTED
+from render_agent.frames import ffmpeg_available
+
+logger = logging.getLogger(__name__)
 
 RUNTIME_DEPENDENCIES = (
     "boto3",
@@ -38,5 +42,8 @@ def run_selfcheck(out: TextIO) -> int:
         except Exception as exc:
             out.write(f"selfcheck failed: cannot import {name} ({type(exc).__name__})\n")
             return EXIT_UNEXPECTED
+    if not ffmpeg_available():
+        # Only chained clips need it: a warning in the log, not a failure and not on stdout.
+        logger.warning("ffmpeg_not_found", extra={"needed_for": "chained clips"})
     out.write(f"render-agent {render_agent.__version__} selfcheck ok\n")
     return EXIT_OK
