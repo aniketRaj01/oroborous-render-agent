@@ -77,6 +77,14 @@ Implemented in `src/render_agent/runner.py`; run with `python -m render_agent ru
 - Failure mapping to the Job API: model server `oom` is `oom`; any other model server error, a generate timeout or an unreachable server is `render_error`; verification problems are `verify_failed`; upload errors are `upload_error`. A failed clip never kills the run.
 - **Consecutive-failure rule:** after `MAX_CONSECUTIVE_FAILURES` (3) clip failures in a row (any completed clip resets the count) the run stops with exit 5. A model server that is unreachable mid-run counts as a clip failure.
 - `start` errors (`max_attempts_reached`, `wrong_state`, `not_your_lease`, `lease_expired`, `job_not_found`) drop the job: it is not failed, and it is ignored for the rest of the run even if a later claim returns it. `complete` errors: `object_missing` or `size_mismatch` re-upload once and retry once, else the job is failed as `upload_error`; `key_mismatch` is logged loudly and the job failed as `verify_failed`; `not_your_lease` and `lease_expired` drop the job. Transient `complete` failures are retried with backoff for up to `COMPLETE_RETRY_BUDGET_MINUTES` (10), never past the run deadline, then logged and the job given up.
+- **Chained clips** (optional claim fields `startImage` and `lastFrameUpload`, optional `lastFrame` on
+  `complete`; all `{bucket, region, key}` / `{bucket, key, sizeBytes}`, PNG files, keys chosen by the API):
+  before rendering a clip with `startImage` the agent reuses the previous clip's local frame, or downloads
+  it into `SCRATCH_DIR` and sends it to the model server as `conditionImagePath`; a missing start frame
+  fails the clip (`render_error`), it is never rendered from text alone. After a clip with `lastFrameUpload`
+  is verified, the agent extracts its last frame with ffmpeg, uploads it as `image/png`, and sends
+  `lastFrame` with `complete`; a failure there is an `upload_error` for the clip. After a chained clip fails
+  or is given up, later chained clips of that plan are not started in this run.
 - A Job API auth error (HTTP 403) is systemic: exit 3 at once. Other unexpected errors exit 4 with a logged traceback.
 - Exit codes: 0 normal end (idle, deadline, `--max-clips`, signal), 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure (model server never ready, or too many consecutive failures). `--max-clips N` stops after N clips have finished (done or failed).
 - Logs: one line per event (job id, plan id, position, attempt, durations, outcome) and a final `run_summary` line (done, failed, skipped, dropped, runtime, reason). Prompts are never logged.

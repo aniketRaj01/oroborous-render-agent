@@ -145,6 +145,31 @@ To fix a bad release, cut a new, higher version.
 - If a new tag only *looks* bad on one boot (network, PyPI) nothing needs doing: the agent stayed on
   the working version.
 
+## Chained clips (continuity between the clips of a plan)
+
+For a chained plan the Job API gives each clip a `startImage` (an S3 location of the previous clip's
+last frame) and a `lastFrameUpload` (where to put this clip's own last frame). Both are optional; an
+API that does not send them changes nothing.
+
+- **ffmpeg** extracts the last frame, so the instance needs it: `sudo apt-get install -y ffmpeg`
+  (add it to the image). Without it a chained clip fails with `upload_error` ("ffmpeg is required ...").
+  `python -m render_agent check` prints a WARNING when the claim contains chained clips and ffmpeg is
+  missing, and the self-check logs `ffmpeg_not_found` as a warning only.
+- **Order and failure.** Clips run in position order. After a chained clip fails or is given up, later
+  chained clips of that plan are not started in this run (logged as `clip_skipped`, reason
+  `earlier_clip_of_chained_plan_failed`); they wait for a later claim.
+- **Where frames live.** The previous clip's PNG is kept in `SCRATCH_DIR` (`p<plan>-<n>-last.png`) until
+  the next clip has used it, so normally nothing is downloaded. After a restart or when a plan is
+  resumed, the start frame is fetched from S3 (`p<plan>-start-<n>.png`, mode 0644, under the real path
+  of `SCRATCH_DIR`). The model server only accepts an image inside its `ALLOWED_OUTPUT_DIR`, so
+  `SCRATCH_DIR` and the model server's `ALLOWED_OUTPUT_DIR` must be the same directory (both default to
+  `/tmp/render-agent`). A missing start frame fails the clip as `render_error` ("start frame is
+  missing"): it is never rendered from text alone.
+- **IAM.** The frame objects are under `plans/<id>/` in the clip bucket, which the instance role
+  already covers (`s3:PutObject`, `s3:GetObject` on `plans/*`).
+- **Logs.** `start_frame_downloaded` / `start_frame_reused` / `frame_extracted` / `frame_uploaded`, with
+  keys, sizes and seconds, never the prompt.
+
 ## Reading logs
 
 ```sh

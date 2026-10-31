@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 from moto import mock_aws
 from mypy_boto3_s3 import S3Client
 
-from render_agent.uploader import S3Uploader, UploadError, _default_client
+from render_agent.uploader import DownloadError, S3Uploader, UploadError, _default_client
 
 REGION: Literal["ap-south-1"] = "ap-south-1"
 BUCKET = "fake-test-bucket"
@@ -152,3 +152,31 @@ def test_empty_or_missing_local_files_are_rejected_before_any_request(
         upload(S3Uploader(), empty)
     with pytest.raises(UploadError, match="not readable"):
         upload(S3Uploader(), tmp_path / "missing.mp4")
+
+
+def test_upload_takes_a_content_type_and_defaults_to_video(s3: S3Client, tmp_path: Path) -> None:
+    frame = tmp_path / "p1-0-last.png"
+    frame.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 200)
+    key = "plans/253/clip-0-last.png"
+    S3Uploader().upload(frame, bucket=BUCKET, region=REGION, key=key, content_type="image/png")
+    assert s3.get_object(Bucket=BUCKET, Key=key)["ContentType"] == "image/png"
+
+
+def test_download_writes_a_0644_file_atomically(s3: S3Client, tmp_path: Path) -> None:
+    key = "plans/253/clip-0-last.png"
+    s3.put_object(Bucket=BUCKET, Key=key, Body=b"\x89PNG\r\n\x1a\n" + b"x" * 200)
+    dest = tmp_path / "p253-start-1.png"
+    size = S3Uploader().download(bucket=BUCKET, region=REGION, key=key, dest=dest)
+    assert size == 208 and dest.stat().st_size == 208
+    assert dest.stat().st_mode & 0o777 == 0o644
+    assert [p.name for p in tmp_path.iterdir()] == [dest.name]  # no .partial left behind
+
+
+def test_download_of_a_missing_object_is_a_download_error_with_the_code_only(
+    s3: S3Client, tmp_path: Path
+) -> None:
+    dest = tmp_path / "frame.png"
+    with pytest.raises(DownloadError) as caught:
+        S3Uploader().download(bucket=BUCKET, region=REGION, key="plans/9/nope.png", dest=dest)
+    assert "NoSuchKey" in str(caught.value) and BUCKET not in str(caught.value)
+    assert list(tmp_path.iterdir()) == []

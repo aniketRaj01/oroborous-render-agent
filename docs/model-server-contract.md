@@ -161,7 +161,7 @@ Clarifications added with the implementation in `model_server/ltx_server` (nothi
   `409 busy` until it finishes, as the section on timeouts allows.
 - **Shutdown.** On SIGTERM the server stops accepting connections and lets requests already running
   finish (including writing their response) for up to `SHUTDOWN_GRACE_SECONDS` (30 by default), then exits.
-- **Optional first-frame image (additive; the agent does not send it yet).** A request may add the top-level
+- **Optional first-frame image (additive; the agent sends it for chained clips).** A request may add the top-level
   field `conditionImagePath` and the param `conditionStrength`, so that a clip starts from a given picture
   (for example the last frame of the previous clip) instead of from the prompt alone:
 

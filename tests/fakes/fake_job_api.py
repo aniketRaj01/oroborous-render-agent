@@ -50,10 +50,18 @@ class FakeJob:
     last_error: str | None = None
     last_fail_code: str | None = None
     last_fail_message: str | None = None
+    # Chained clips: the API hands out where to read the start frame and write the last frame.
+    chained_start: bool = False
+    chained_last: bool = False
+    last_frame_reported: dict[str, Any] | None = None
 
     @property
     def key(self) -> str:
         return f"plans/{self.plan_id}/clip-{self.position}.mp4"
+
+    @property
+    def frame_key(self) -> str:
+        return f"plans/{self.plan_id}/clip-{self.position}-last.png"
 
 
 @dataclass
@@ -102,6 +110,13 @@ class FakeJobApi:
             )
         self.plans.append(plan)
         return plan
+
+    def chain(self, plan: FakePlan) -> None:
+        """Mark the plan chained: every clip but the first has a start image, every clip but the
+        last a last-frame upload (the frame of clip N-1 is the start image of clip N)."""
+        for job in plan.jobs:
+            job.chained_start = job.position > 0
+            job.chained_last = job.position < len(plan.jobs) - 1
 
     def job(self, job_id: int) -> FakeJob:
         for plan in self.plans:
@@ -250,8 +265,22 @@ class FakeJobApi:
                 job.claimed_by = agent_id
                 job.lease_expires_at = lease_expires_at
                 job.agent_version = payload["agentVersion"]
+                chained: dict[str, Any] = {}
+                if job.chained_start:
+                    chained["startImage"] = {
+                        "bucket": FAKE_BUCKET,
+                        "region": FAKE_REGION,
+                        "key": f"plans/{plan.plan_id}/clip-{job.position - 1}-last.png",
+                    }
+                if job.chained_last:
+                    chained["lastFrameUpload"] = {
+                        "bucket": FAKE_BUCKET,
+                        "region": FAKE_REGION,
+                        "key": job.frame_key,
+                    }
                 clips.append(
                     {
+                        **chained,
                         "jobId": job.job_id,
                         "position": job.position,
                         "prompt": job.prompt,
@@ -387,11 +416,21 @@ class FakeJobApi:
             return self._error(
                 409, "not_your_lease", f"Job {job.job_id} is leased to another agent"
             )
+        last_frame = payload.get("lastFrame")
+        if last_frame is not None:
+            frame_size = self.s3_objects.get((last_frame.get("bucket"), last_frame.get("key")), 0)
+            if last_frame.get("key") != job.frame_key or not job.chained_last:
+                return self._error(409, "key_mismatch", "Unexpected last frame key")
+            if frame_size <= 0:
+                return self._error(409, "object_missing", "Last frame object is missing")
+            if frame_size != last_frame.get("sizeBytes"):
+                return self._error(409, "size_mismatch", "Last frame size differs")
         actual = self.s3_objects.get((upload["bucket"], upload["key"]), 0)
         if actual <= 0:
             return self._error(409, "object_missing", "Object is missing or empty")
         if actual != size:
             return self._error(409, "size_mismatch", "Object size differs from sizeBytes")
+        job.last_frame_reported = last_frame
         job.status = "done"
         job.storage_key = job.key
         job.claimed_by = None

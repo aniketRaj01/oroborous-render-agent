@@ -10,6 +10,7 @@ import httpx
 
 from conftest import build_client, valid_env
 from fakes.clock import FakeClock
+from fakes.fake_frames import FakeFrameExtractor
 from fakes.fake_job_api import FakeJobApi
 from fakes.fake_model_server import FakeModelServer
 from fakes.fake_uploader import FakeUploader
@@ -31,6 +32,7 @@ class Rig:
     model: FakeModelServer
     uploader: FakeUploader
     settings: Settings
+    frames: FakeFrameExtractor = field(default_factory=FakeFrameExtractor)
     stop: bool = False
     stop_checks: list[int] = field(default_factory=list)
 
@@ -49,6 +51,7 @@ class Rig:
             clock=self.clock,
             should_stop=lambda: self.stop,
             max_clips=max_clips,
+            frame_extractor=self.frames,
         )
 
     def run(self, max_clips: int | None = None) -> RunResult:

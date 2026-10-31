@@ -75,6 +75,7 @@ class JobApi(Protocol):
         upload: CompleteUpload,
         render: RenderInfo,
         cost_inr: float | None = None,
+        last_frame: CompleteUpload | None = None,
     ) -> CompleteResponse: ...
 
     def fail(self, job_id: int, *, code: FailErrorCode, message: str) -> FailResponse: ...
@@ -147,6 +148,7 @@ class JobApiClient:
         upload: CompleteUpload,
         render: RenderInfo,
         cost_inr: float | None = None,
+        last_frame: CompleteUpload | None = None,
     ) -> CompleteResponse:
         request = CompleteRequest(
             agent_id=self._agent_id,
@@ -154,6 +156,7 @@ class JobApiClient:
             upload=upload,
             render=render,
             cost_inr=cost_inr,
+            last_frame=last_frame,
         )
         return self._call(COMPLETE_ROUTE, request.to_json_bytes(), CompleteResponse)
 

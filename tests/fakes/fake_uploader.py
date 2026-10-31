@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fakes.clock import FakeClock
 from fakes.fake_job_api import FakeJobApi
-from render_agent.uploader import UploadError
+from render_agent.uploader import DownloadError, UploadError
 
 
 @dataclass(frozen=True)
@@ -16,6 +16,7 @@ class UploadRecord:
     region: str
     key: str
     size: int
+    content_type: str = "video/mp4"
 
 
 class FakeUploader:
@@ -29,13 +30,25 @@ class FakeUploader:
         self.failures: list[UploadError] = []
         self.skip_registration_times = 0
         self.register_wrong_size_times = 0
+        # (bucket, key) -> bytes, for what download() can fetch; uploads are stored here too.
+        self.objects: dict[tuple[str, str], bytes] = {}
+        self.downloads: list[tuple[str, str]] = []
 
-    def upload(self, path: Path, *, bucket: str, region: str, key: str) -> int:
+    def upload(
+        self,
+        path: Path,
+        *,
+        bucket: str,
+        region: str,
+        key: str,
+        content_type: str = "video/mp4",
+    ) -> int:
         self._clock.advance(self._upload_seconds)
         if self.failures:
             raise self.failures.pop(0)
         size = path.stat().st_size
-        self.uploads.append(UploadRecord(bucket, region, key, size))
+        self.uploads.append(UploadRecord(bucket, region, key, size, content_type))
+        self.objects[(bucket, key)] = path.read_bytes()
         if self.skip_registration_times > 0:
             self.skip_registration_times -= 1
         elif self.register_wrong_size_times > 0:
@@ -44,3 +57,12 @@ class FakeUploader:
         else:
             self._fake_api.s3_objects[(bucket, key)] = size
         return size
+
+    def download(self, *, bucket: str, region: str, key: str, dest: Path) -> int:
+        self.downloads.append((bucket, key))
+        data = self.objects.get((bucket, key))
+        if data is None:
+            raise DownloadError("S3 request failed (NoSuchKey)")
+        dest.write_bytes(data)
+        dest.chmod(0o644)
+        return len(data)
