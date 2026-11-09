@@ -169,10 +169,15 @@ def test_systemd_analyze_accepts_the_unit_files(tmp_path: Path) -> None:
         if any(marker in line for marker in FATAL)
     ]
     assert problems == [], "\n".join(problems)
+    # systemd-analyze also reports on the machine's own units (a newer runner image warns about
+    # options removed from /usr/lib/systemd/system/*), which are none of our business.
+    ours = tuple(path.name for path in (SERVICE, DEADMAN_SERVICE, DEADMAN_TIMER, LTX_SERVICE))
     unexplained = [
         line
         for line in (result.stdout + result.stderr).splitlines()
-        if line.strip() and not any(marker in line for marker in BENIGN)
+        if line.strip()
+        and any(name in line for name in ours)
+        and not any(marker in line for marker in BENIGN)
     ]
     assert result.returncode == 0 or unexplained == [], "\n".join(unexplained)
 
