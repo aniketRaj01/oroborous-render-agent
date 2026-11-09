@@ -139,35 +139,39 @@ class LtxBinding:
         )
 
     def _condition_images(self, request: RenderRequest) -> list[Any]:
-        """[] without a first-frame image (exactly the call made before images existed)."""
-        if request.condition_image_path is None:
+        """[] without condition images (exactly the call made before images existed)."""
+        if not request.condition_images:
             return []
         # VERIFY-ON-INSTANCE: 23
         from ltx_pipelines.utils.types import ImageConditioningInput
 
-        size = image_size(request.condition_image_path)
-        event(
-            logging.INFO,
-            "condition_image",
-            path=str(request.condition_image_path),
-            image_width=size[0] if size else "unknown",
-            image_height=size[1] if size else "unknown",
-            render_width=request.width,
-            render_height=request.height,
-            same_aspect=(
-                size[0] * request.height == size[1] * request.width if size else "unknown"
-            ),
-            strength=request.condition_strength,
-        )
-        # The pipeline resizes (fills, then center-crops) the image to the render size, and
-        # fills in crf itself when it is left out.
-        return [
-            ImageConditioningInput(
-                path=str(request.condition_image_path),
-                frame_idx=0,
-                strength=request.condition_strength,
+        inputs = []
+        for image in request.condition_images:
+            size = image_size(image.path)
+            event(
+                logging.INFO,
+                "condition_image",
+                path=str(image.path),
+                frame_idx=image.frame_idx,
+                strength=image.strength,
+                image_width=size[0] if size else "unknown",
+                image_height=size[1] if size else "unknown",
+                render_width=request.width,
+                render_height=request.height,
+                same_aspect=(
+                    size[0] * request.height == size[1] * request.width if size else "unknown"
+                ),
             )
-        ]
+            # The pipeline resizes (fills, then center-crops) each image to the render size, and
+            # fills in crf itself when it is left out. Frame 0 replaces the first latent; any
+            # other index is a keyframe at that pixel frame.
+            # VERIFY-ON-INSTANCE: 25
+            inputs.append(
+                ImageConditioningInput(
+                    path=str(image.path), frame_idx=image.frame_idx, strength=image.strength
+                )
+            )
+        return inputs
 
     def _encode(self, output: Any, request: RenderRequest, output_path: Path) -> None:
         # VERIFY-ON-INSTANCE: 9

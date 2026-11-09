@@ -183,3 +183,27 @@ Clarifications added with the implementation in `model_server/ltx_server` (nothi
   render size (`event=condition_image`, with the path, never the prompt). Without `conditionImagePath` the
   request behaves exactly as before, and the start-up warm-up never uses an image. The model weights are not
   reloaded for a conditioned clip.
+- **Several condition images (additive).** The top-level field `conditionImages` is an optional list of
+  `{ "path": ..., "frameIdx": ..., "strength": ... }` (`strength` optional, default 1.0), so that a clip can
+  be pinned to pictures at different frames, for example a fixed anchor image of a recurring character at
+  frame 0 or at a late frame:
+
+  ```sh
+  curl -s localhost:8000/generate -H 'content-type: application/json' -d '{
+    "jobId": 3, "prompt": "exact prompt text",
+    "params": { "width": 1280, "height": 704, "numFrames": 361, "seed": 7 },
+    "outputPath": "/tmp/render-agent/story-3.mp4",
+    "conditionImages": [
+      { "path": "/tmp/render-agent/story-2-last.png", "frameIdx": 0 },
+      { "path": "/tmp/render-agent/anchor.png", "frameIdx": 300, "strength": 0.6 } ] }'
+  ```
+
+  Each `path` follows the `conditionImagePath` rules (absolute, `.png`/`.jpg`/`.jpeg`, regular readable file,
+  real path inside the allowed output directory). `frameIdx` is an integer from 0 to `numFrames - 1` (a
+  pixel-frame index of the output; LTX itself only requires it to lie inside the clip, it does not need
+  multiples of 8). At most 3 entries, and no two with the same `frameIdx`. `conditionImagePath` +
+  `conditionStrength` remain the shorthand for a single entry at frame 0; sending `conditionImagePath` and
+  `conditionImages` together, or `conditionStrength` with `conditionImages`, is `400 invalid_request`. An
+  empty list means no images. LTX conditions the first latent from an image at frame 0 and treats an image
+  at any other index as a keyframe at that frame. The server logs one `event=condition_image` line per image
+  (path, frame index, strength, image size against render size; never the prompt).

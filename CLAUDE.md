@@ -85,6 +85,11 @@ Implemented in `src/render_agent/runner.py`; run with `python -m render_agent ru
   is verified, the agent extracts its last frame with ffmpeg, uploads it as `image/png`, and sends
   `lastFrame` with `complete`; a failure there is an `upload_error` for the clip. After a chained clip fails
   or is given up, later chained clips of that plan are not started in this run.
+- **Extra condition images** (optional claim field `conditionImages`: a list of
+  `{bucket, region, key, frameIdx, strength}`): downloaded into `SCRATCH_DIR` before the render and sent to the
+  model server as `conditionImages` (a chained clip's start frame stays at frame 0 alongside them), deleted
+  after the clip. A missing or unreadable image, more than 3 images or a repeated frame index fails the clip
+  as `render_error`: it is never rendered without them.
 - A Job API auth error (HTTP 403) is systemic: exit 3 at once. Other unexpected errors exit 4 with a logged traceback.
 - Exit codes: 0 normal end (idle, deadline, `--max-clips`, signal), 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure (model server never ready, or too many consecutive failures). `--max-clips N` stops after N clips have finished (done or failed).
 - Logs: one line per event (job id, plan id, position, attempt, durations, outcome) and a final `run_summary` line (done, failed, skipped, dropped, runtime, reason). Prompts are never logged.

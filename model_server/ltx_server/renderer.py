@@ -18,6 +18,15 @@ class RendererOutOfMemory(Exception):
 
 
 @dataclass(frozen=True)
+class ConditionImage:
+    """A picture the clip is conditioned on, pinned at a pixel frame index of the output."""
+
+    path: Path
+    frame_idx: int = 0
+    strength: float = 1.0
+
+
+@dataclass(frozen=True)
 class RenderRequest:
     job_id: int
     prompt: str = field(repr=False)
@@ -26,9 +35,8 @@ class RenderRequest:
     num_frames: int
     fps: float
     seed: int
-    # First-frame image (frame 0) the clip starts from; None renders from the prompt alone.
-    condition_image_path: Path | None = None
-    condition_strength: float = 1.0
+    # Sorted by frame index; empty renders from the prompt alone.
+    condition_images: tuple[ConditionImage, ...] = ()
 
 
 @dataclass(frozen=True)

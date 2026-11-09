@@ -331,7 +331,7 @@ models. It was written from the same commit as above and has not been run. Do it
   `model_server/tools/compare_clips.py`.
 - **If different:** only the import lines and argument names change.
 
-## First-frame image conditioning: items 23 and 24
+## Image conditioning: items 23 to 25
 
 A request may carry `conditionImagePath` and `conditionStrength` (see the contract's implementation notes).
 Without an image the pipeline call is unchanged (`images=[]`).
@@ -368,3 +368,24 @@ Without an image the pipeline call is unchanged (`images=[]`).
   prompt and seed (`model_server/tools/compare_clips.py`).
 - **If different:** drop the replacement (the encoder is then built for each conditioned clip; correct, just
   slower), or match the new call shape.
+
+### 25. Several images at different frame indexes
+
+- **Assumption:** `images` may hold several `ImageConditioningInput(path, frame_idx, strength)`; for each,
+  `combined_image_conditionings` (`utils/helpers.py`) makes a `VideoConditionByLatentIndex` when
+  `frame_idx == 0` (the first latent is replaced) and otherwise a `VideoConditionByKeyframeIndex` that appends
+  the encoded image as extra tokens positioned at pixel frame `frame_idx`; `assert_image_frames_in_clip`
+  only requires `0 <= frame_idx < num_frames`. No alignment to multiples of 8 is enforced, so the server
+  validates only that range, the cap of 3 and distinct indexes. The same resident video encoder serves
+  all images in one `image_conditioner(fn)` call. Read at commit `be6d6d0a69d11a0a399c462ed92606692e5f8697`.
+- **Code:** `LtxBinding._condition_images` (one input per entry, sorted by frame index).
+- **Open:** `packages/ltx-pipelines/src/ltx_pipelines/utils/helpers.py` (`combined_image_conditionings`),
+  `packages/ltx-pipelines/src/ltx_pipelines/chunks/conditionings.py` (`assert_image_frames_in_clip`,
+  `images_for_chunk`), `packages/ltx-core/src/ltx_core/conditioning/types/keyframe_cond.py`.
+- **Confirm:** a request with `conditionImages` at frames 0 and 300 renders without error in both modes;
+  the log has two `condition_image` lines; frame 0 of the output matches the first image; around frame 300
+  the character resembles the second image (see the experiment in the PR); a keyframe index that is not a
+  multiple of 8 (for example 13) also works, or fails with a clear error.
+- **If different:** if the library enforces an alignment, add that check to `parse_condition_images` in
+  `request.py`; if a newer LTX renames `frame_idx` or changes the keyframe class, only `_condition_images`
+  changes.

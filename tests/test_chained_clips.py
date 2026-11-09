@@ -142,3 +142,86 @@ def test_clips_without_chain_fields_behave_as_before(tmp_path: Path) -> None:
     assert rig.frames.extracted == []
     complete_bodies = [json.loads(c.body) for c in rig.fake_api.calls("/v1/complete")]
     assert all("lastFrame" not in body for body in complete_bodies)
+
+
+# --- extra condition images --------------------------------------------------------------------
+
+ANCHOR_KEY = "characters/7/anchor.png"
+LATE_KEY = "characters/7/late.png"
+
+
+def seed_images(rig: Rig, *keys: str) -> None:
+    for key in keys:
+        rig.uploader.objects[(FAKE_BUCKET, key)] = FAKE_PNG
+
+
+def test_an_anchor_image_is_downloaded_and_sent_at_its_frame(tmp_path: Path) -> None:
+    rig = make_rig(tmp_path)
+    plan = rig.fake_api.add_plan(1, clips=1)
+    plan.jobs[0].condition_images = [(ANCHOR_KEY, 0, 1.0)]
+    seed_images(rig, ANCHOR_KEY)
+    result = rig.run()
+    assert result.done == 1
+    (request,) = rig.model.requests
+    real_scratch = rig.scratch.resolve()
+    assert request.condition_image_path is None
+    assert request.condition_images is not None
+    assert [(i.path, i.frame_idx, i.strength) for i in request.condition_images] == [
+        (str(real_scratch / "p1-0-cond-0.png"), 0, 1.0)
+    ]
+    assert rig.uploader.downloads == [(FAKE_BUCKET, ANCHOR_KEY)]
+    assert rig.leftover_files() == []
+
+
+def test_a_chained_clip_keeps_its_start_frame_at_zero_and_the_anchor_rides_alongside(
+    tmp_path: Path,
+) -> None:
+    rig, _ids = chained_rig(tmp_path, clips=2)
+    rig.fake_api.plans[0].jobs[1].condition_images = [(LATE_KEY, 300, 0.6)]
+    seed_images(rig, LATE_KEY)
+    result = rig.run()
+    assert result.done == 2
+    first, second = rig.model.requests
+    assert first.condition_images is None and first.condition_image_path is None
+    real_scratch = rig.scratch.resolve()
+    assert second.condition_image_path is None and second.condition_images is not None
+    assert [(i.path, i.frame_idx, i.strength) for i in second.condition_images] == [
+        (str(real_scratch / "p1-0-last.png"), 0, 1.0),
+        (str(real_scratch / "p1-1-cond-0.png"), 300, 0.6),
+    ]
+    assert rig.leftover_files() == []
+
+
+def test_a_missing_extra_image_fails_the_clip_without_rendering(tmp_path: Path) -> None:
+    rig = make_rig(tmp_path)
+    plan = rig.fake_api.add_plan(1, clips=1)
+    plan.jobs[0].condition_images = [(ANCHOR_KEY, 0, 1.0)]  # never uploaded
+    result = rig.run()
+    assert result.done == 0 and rig.model.requests == []
+    job = plan.jobs[0]
+    assert job.last_fail_code == "render_error"
+    assert "condition image 0" in (job.last_fail_message or "")
+    assert rig.leftover_files() == []
+
+
+def test_an_extra_image_at_frame_zero_conflicts_with_the_chained_start_frame(
+    tmp_path: Path,
+) -> None:
+    rig, _ids = chained_rig(tmp_path, clips=2)
+    rig.fake_api.plans[0].jobs[1].condition_images = [(ANCHOR_KEY, 0, 1.0)]
+    seed_images(rig, ANCHOR_KEY)
+    rig.run()
+    job = rig.fake_api.plans[0].jobs[1]
+    assert job.last_fail_code == "render_error"
+    assert "same frame" in (job.last_fail_message or "")
+    assert [r.job_id for r in rig.model.requests][-1:] != [job.job_id]
+
+
+def test_too_many_images_for_one_clip_fail_it(tmp_path: Path) -> None:
+    rig = make_rig(tmp_path)
+    plan = rig.fake_api.add_plan(1, clips=1)
+    keys = [f"characters/7/{i}.png" for i in range(4)]
+    plan.jobs[0].condition_images = [(key, 8 * i, 1.0) for i, key in enumerate(keys)]
+    seed_images(rig, *keys)
+    rig.run()
+    assert plan.jobs[0].last_fail_code == "render_error" and rig.model.requests == []

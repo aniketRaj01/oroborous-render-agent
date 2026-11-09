@@ -34,6 +34,12 @@ class GenerateParams(_Request):
     seed: int | None = None
 
 
+class ConditionImageRequest(_Request):
+    path: str
+    frame_idx: int
+    strength: float = 1.0
+
+
 class GenerateRequest(_Request):
     job_id: int
     prompt: str = Field(repr=False)
@@ -41,6 +47,8 @@ class GenerateRequest(_Request):
     output_path: str
     # First-frame image for chained clips; omitted from the body when None.
     condition_image_path: str | None = None
+    # Several images at different frame indexes; never sent together with condition_image_path.
+    condition_images: list[ConditionImageRequest] | None = None
 
     def to_json_bytes(self) -> bytes:
         return self.model_dump_json(by_alias=True, exclude_none=True).encode("utf-8")
