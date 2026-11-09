@@ -167,6 +167,12 @@ API that does not send them changes nothing.
   missing"): it is never rendered from text alone.
 - **IAM.** The frame objects are under `plans/<id>/` in the clip bucket, which the instance role
   already covers (`s3:PutObject`, `s3:GetObject` on `plans/*`).
+- **Extra condition images.** A clip may also carry `conditionImages` in the claim: `{bucket, region, key,
+  frameIdx, strength}` entries (an anchor image of a recurring character at frame 0 or at a later frame).
+  They are downloaded per clip into `SCRATCH_DIR` (`p<plan>-<n>-cond-<i>.<ext>`), sent to the model server
+  as `conditionImages` (together with the chained start frame, which keeps frame 0), and deleted when the
+  clip is over. A missing or unreadable one, more than 3 images, or two at the same frame fails the clip as
+  `render_error`; the clip is never rendered without an image it asked for.
 - **Logs.** `start_frame_downloaded` / `start_frame_reused` / `frame_extracted` / `frame_uploaded`, with
   keys, sizes and seconds, never the prompt.
 

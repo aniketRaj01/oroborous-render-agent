@@ -103,6 +103,16 @@ class ClipUpload(_Response):
     key: str
 
 
+class ConditionImageLocation(_Response):
+    """An extra condition image: where to fetch it, and the clip frame it is pinned at."""
+
+    bucket: str
+    region: str
+    key: str
+    frame_idx: int = Field(ge=0)
+    strength: float = Field(default=1.0, gt=0, le=1)
+
+
 class Clip(_Response):
     job_id: int
     position: int
@@ -115,6 +125,9 @@ class Clip(_Response):
     # where to put its last frame. Same shape as `upload`.
     start_image: ClipUpload | None = None
     last_frame_upload: ClipUpload | None = None
+    # Extra images pinned at frame indexes of this clip (an anchor for a recurring character, ...).
+    # Independent of chaining: they do not make a clip chained.
+    condition_images: list[ConditionImageLocation] | None = None
 
     @property
     def is_chained(self) -> bool:

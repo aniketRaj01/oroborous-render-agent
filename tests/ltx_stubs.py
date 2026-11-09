@@ -13,7 +13,7 @@ import types
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 import pytest
 
@@ -34,6 +34,13 @@ class QuantizationKind(str, enum.Enum):
 
     def to_policy(self, checkpoint_path: str | None = None) -> tuple[str, str | None]:
         return (self.value, checkpoint_path)
+
+
+class ImageConditioningInput(NamedTuple):
+    path: str
+    frame_idx: int
+    strength: float
+    crf: int | None = None
 
 
 @dataclass
@@ -174,7 +181,11 @@ def install(monkeypatch: pytest.MonkeyPatch, *, accepts_registry: bool = True) -
     module("ltx_pipelines.utils")
     module("ltx_pipelines.utils.model_paths", ModelPaths=StubModelPaths)
     module("ltx_pipelines.utils.quantization_factory", QuantizationKind=QuantizationKind)
-    module("ltx_pipelines.utils.types", OffloadMode=OffloadMode)
+    module(
+        "ltx_pipelines.utils.types",
+        OffloadMode=OffloadMode,
+        ImageConditioningInput=ImageConditioningInput,
+    )
     module("ltx_pipelines.utils.media_io", encode_video=encode_video)
     module("ltx_core")
     module("ltx_core.loader")

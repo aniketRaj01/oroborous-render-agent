@@ -44,6 +44,30 @@ def check_png(path: Path) -> int:
     return size
 
 
+JPEG_SIGNATURE = b"\xff\xd8\xff"
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
+
+
+def image_suffix(key: str) -> str | None:
+    """The file suffix the model server accepts for an S3 key, or None for any other type."""
+    lowered = key.lower()
+    return next((suffix for suffix in IMAGE_SUFFIXES if lowered.endswith(suffix)), None)
+
+
+def check_image(path: Path) -> int:
+    """Size of a plausible PNG or JPEG at `path`; raises FrameError otherwise."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            head = handle.read(len(PNG_SIGNATURE))
+    except OSError:
+        raise FrameError("image file is missing") from None
+    known = head == PNG_SIGNATURE or head.startswith(JPEG_SIGNATURE)
+    if not MIN_FRAME_BYTES <= size <= MAX_FRAME_BYTES or not known:
+        raise FrameError("image file is not a plausible PNG or JPEG")
+    return size
+
+
 class FfmpegFrameExtractor:
     def __init__(self, *, ffmpeg: str = "ffmpeg", timeout_seconds: float = FFMPEG_TIMEOUT_SECONDS):
         self._ffmpeg = ffmpeg

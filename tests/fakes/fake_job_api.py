@@ -54,6 +54,8 @@ class FakeJob:
     chained_start: bool = False
     chained_last: bool = False
     last_frame_reported: dict[str, Any] | None = None
+    # Extra condition images: (key, frame_idx, strength) handed out with the claim.
+    condition_images: list[tuple[str, int, float]] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -278,6 +280,17 @@ class FakeJobApi:
                         "region": FAKE_REGION,
                         "key": job.frame_key,
                     }
+                if job.condition_images:
+                    chained["conditionImages"] = [
+                        {
+                            "bucket": FAKE_BUCKET,
+                            "region": FAKE_REGION,
+                            "key": key,
+                            "frameIdx": frame_idx,
+                            "strength": strength,
+                        }
+                        for key, frame_idx, strength in job.condition_images
+                    ]
                 clips.append(
                     {
                         **chained,

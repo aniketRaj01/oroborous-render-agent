@@ -10,7 +10,14 @@ from pathlib import Path
 from render_agent.clock import Clock
 from render_agent.config import Settings
 from render_agent.exit_codes import EXIT_AUTH, EXIT_OK, EXIT_SYSTEMIC
-from render_agent.frames import FfmpegFrameExtractor, FrameError, FrameExtractor, check_png
+from render_agent.frames import (
+    FfmpegFrameExtractor,
+    FrameError,
+    FrameExtractor,
+    check_image,
+    check_png,
+    image_suffix,
+)
 from render_agent.job_api.client import JobApi
 from render_agent.job_api.errors import (
     AuthError,
@@ -36,6 +43,7 @@ from render_agent.model_server.client import (
     ModelServerTimeout,
 )
 from render_agent.model_server.models import (
+    ConditionImageRequest,
     GenerateParams,
     GenerateRequest,
     ModelServerErrorCode,
@@ -53,6 +61,8 @@ COMPLETE_BACKOFF_MAX_SECONDS = 60.0
 FAIL_MESSAGE_CHARS = 500
 FTYP_OFFSET = 4
 FRAME_CONTENT_TYPE = "image/png"
+# The model server accepts at most this many condition images per clip (its MAX_CONDITION_IMAGES).
+MAX_CONDITION_IMAGES = 3
 
 # Reasons a run ends. The exit code follows from the reason.
 REASON_IDLE = "idle"
@@ -92,6 +102,15 @@ class _Frame:
     path: Path
     location: ClipUpload
     size: int
+
+
+@dataclass(frozen=True)
+class _ExtraImage:
+    """An extra condition image, downloaded for one clip and deleted when the clip is over."""
+
+    path: Path
+    frame_idx: int
+    strength: float
 
 
 class _ClipFailure(Exception):
@@ -299,14 +318,16 @@ class Runner:
         ids = {"job_id": clip.job_id, "plan_id": plan.plan_id, "position": clip.position}
         started = self._clock.monotonic()
         output: Path | None = None
+        extras: list[_ExtraImage] = []
         attempt = 0
         self._release_frames(keep_plan=plan.plan_id)
         try:
             attempt = self._start(clip, ids)
             output = self._settings.scratch_dir / f"{clip.job_id}-{attempt}.mp4"
             start_image = self._prepare_start_image(plan, clip, ids)
+            extras = self._prepare_extra_images(plan, clip, ids, extras)
             self._check_stop()
-            render = self._render(clip, output, ids, attempt, start_image)
+            render = self._render(clip, output, ids, attempt, start_image, extras)
             self._check_stop()
             self._verify(output)
             self._check_stop()
@@ -358,6 +379,8 @@ class Runner:
         finally:
             if output is not None:
                 output.unlink(missing_ok=True)
+            for extra in extras:
+                extra.path.unlink(missing_ok=True)
         return None
 
     def _give_up(self, clip: Clip) -> None:
@@ -390,7 +413,24 @@ class Runner:
         ids: dict[str, int],
         attempt: int,
         start_image: Path | None = None,
+        extras: list[_ExtraImage] | None = None,
     ) -> RenderReport:
+        images: list[ConditionImageRequest] | None = None
+        if extras:
+            # Several images go as one list; the chained start frame keeps frame 0.
+            images = [
+                *(
+                    [ConditionImageRequest(path=str(start_image), frame_idx=0)]
+                    if start_image is not None
+                    else []
+                ),
+                *(
+                    ConditionImageRequest(
+                        path=str(extra.path), frame_idx=extra.frame_idx, strength=extra.strength
+                    )
+                    for extra in extras
+                ),
+            ]
         request = GenerateRequest(
             job_id=clip.job_id,
             prompt=clip.prompt,
@@ -398,7 +438,10 @@ class Runner:
                 clip.params.model_dump(exclude_none=True) if clip.params else {}
             ),
             output_path=str(output),
-            condition_image_path=str(start_image) if start_image is not None else None,
+            condition_image_path=(
+                str(start_image) if start_image is not None and images is None else None
+            ),
+            condition_images=images,
         )
         try:
             response = self._model_server.generate(request)
@@ -500,6 +543,69 @@ class Runner:
             },
         )
         return dest
+
+    def _prepare_extra_images(
+        self, plan: Plan, clip: Clip, ids: dict[str, int], downloaded: list[_ExtraImage]
+    ) -> list[_ExtraImage]:
+        """Download the clip's extra condition images. Any problem fails the clip: rendering
+        without an image the plan asked for would silently change the result."""
+        wanted = clip.condition_images or []
+        if not wanted:
+            return []
+        frame_indexes = [image.frame_idx for image in wanted]
+        if clip.start_image is not None:
+            frame_indexes.append(0)  # the chained start frame is pinned at frame 0
+        if len(frame_indexes) > MAX_CONDITION_IMAGES:
+            raise _ClipFailure(
+                FailErrorCode.RENDER_ERROR,
+                f"too many condition images for one clip (at most {MAX_CONDITION_IMAGES})",
+            )
+        if len(set(frame_indexes)) != len(frame_indexes):
+            raise _ClipFailure(
+                FailErrorCode.RENDER_ERROR,
+                "two condition images are pinned at the same frame (a chained start frame "
+                "already uses frame 0)",
+            )
+        for index, image in enumerate(wanted):
+            suffix = image_suffix(image.key)
+            started = self._clock.monotonic()
+            dest = self._settings.scratch_dir.resolve() / (
+                f"p{plan.plan_id}-{clip.position}-cond-{index}{suffix or ''}"
+            )
+            try:
+                if suffix is None:
+                    raise FrameError("unsupported image type")
+                size = self._uploader.download(
+                    bucket=image.bucket, region=image.region, key=image.key, dest=dest
+                )
+                downloaded.append(_ExtraImage(dest, image.frame_idx, image.strength))
+                check_image(dest)
+            except (DownloadError, FrameError) as exc:
+                logger.warning(
+                    "condition_image_missing",
+                    extra={
+                        **ids,
+                        "key": image.key,
+                        "frame_idx": image.frame_idx,
+                        "error": str(exc),
+                    },
+                )
+                raise _ClipFailure(
+                    FailErrorCode.RENDER_ERROR,
+                    f"condition image {index} (frame {image.frame_idx}) is missing or unreadable, "
+                    f"so the clip was not rendered ({exc})",
+                ) from None
+            logger.info(
+                "condition_image_downloaded",
+                extra={
+                    **ids,
+                    "key": image.key,
+                    "frame_idx": image.frame_idx,
+                    "size_bytes": size,
+                    "download_s": round(self._clock.monotonic() - started, 1),
+                },
+            )
+        return downloaded
 
     def _extract_and_upload_frame(
         self, plan: Plan, clip: Clip, output: Path, ids: dict[str, int]
