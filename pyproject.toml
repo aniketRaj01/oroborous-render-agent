@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "render-agent"
-version = "0.0.0.dev0"
+version = "0.1.0"
 description = "GPU render agent for the Oroborous content pipeline"
 readme = "README.md"
 requires-python = ">=3.10"
