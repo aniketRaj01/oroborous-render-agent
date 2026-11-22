@@ -2,18 +2,21 @@
 """Boot-time release bootstrap for the render agent. Standard library only.
 
 Runs as the service user before the agent starts (systemd ExecStartPre). It makes sure the
-newest deliberately released version (a git tag vX.Y.Z whose commit is on main) is installed
-reproducibly and self-checked, switches to it atomically, and records which version will run.
-A bad tag, a GitHub outage or a missing network never stops the agent from starting on the
+version to run is installed reproducibly and self-checked, switches to it atomically, and records
+which version will run. By default (RENDER_AGENT_TRACK=main) that is the head of origin/main;
+RENDER_AGENT_TRACK=tags keeps the older behaviour (the newest git tag vX.Y.Z whose commit is on
+main and whose pyproject version equals the tag); RENDER_AGENT_PIN runs one exact tag or commit.
+A bad commit, a GitHub outage or a missing network never stops the agent from starting on the
 version that already works: every failure while preparing a new version falls back to the
 current one. It exits non-zero only when there is no usable version at all.
 
 Layout under RENDER_AGENT_HOME (default /opt/render-agent):
 
   repo/                bare mirror of the public repository (fetched, never executed from)
-  releases/<tag>/      exported source of a tag, plus a RELEASE file (tag, commit)
+  releases/<name>/     exported source plus a RELEASE file (tag, commit); <name> is the tag, or
+                       main-<12 hex> / commit-<12 hex> for a commit
   venvs/<hash>/        one virtualenv per sha256-12 of requirements.lock
-  current -> releases/<tag>       current-venv -> venvs/<hash>        (atomic switches)
+  current -> releases/<name>      current-venv -> venvs/<hash>        (atomic switches)
   previous, previous-venv         the last pair that was current
 
 Configuration comes from the environment or the file named by RENDER_AGENT_DEPLOY_ENV
@@ -41,6 +44,10 @@ DEFAULT_HOME = "/opt/render-agent"
 DEFAULT_DEPLOY_ENV = "/etc/render-agent/deploy.env"
 DEFAULT_VERSION_ENV = "/run/render-agent/version.env"
 MAIN_BRANCH = "main"
+TRACK_MAIN = "main"
+TRACK_TAGS = "tags"
+# Labels of a version that is a commit, not a tag. The version string is `<label>+<12 hex>`.
+COMMIT_LABELS = (MAIN_BRANCH, "commit")
 KEEP_RELEASES = 3
 MAX_AGENT_VERSION_CHARS = 64
 SHORT_SHA_CHARS = 12
@@ -49,6 +56,9 @@ MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 # Matched with fullmatch only: `$` would accept a trailing newline, and \d accepts non-ASCII digits.
 TAG_PATTERN = re.compile(r"v([0-9]{1,6})\.([0-9]{1,6})\.([0-9]{1,6})")
 VENV_NAME = re.compile(r"[0-9a-f]{12}")
+COMMIT_RELEASE_DIR = re.compile(r"(main|commit)-[0-9a-f]{12}")
+PIN_COMMIT = re.compile(r"[0-9a-f]{7,40}")
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
 _PROJECT_VERSION = re.compile(r'^version\s*=\s*"([^"]+)"', re.MULTILINE)
 _URL_USERINFO = re.compile(r"(://)[^/@\s]+@")
 
@@ -132,6 +142,7 @@ class Config:
     home: Path = Path(DEFAULT_HOME)
     python: str = "python3"
     pin: str | None = None
+    track: str = TRACK_MAIN
     version_env: Path = Path(DEFAULT_VERSION_ENV)
     total_budget: float = 300.0
     fetch_retry_budget: float = 120.0
@@ -177,6 +188,7 @@ def load_config(environ: Mapping[str, str], warnings: list[str] | None = None) -
         home=Path(merged.get("RENDER_AGENT_HOME") or defaults.home),
         python=merged.get("RENDER_AGENT_PYTHON") or defaults.python,
         pin=merged.get("RENDER_AGENT_PIN") or None,
+        track=merged.get("RENDER_AGENT_TRACK") or defaults.track,
         version_env=Path(merged.get("RENDER_AGENT_VERSION_ENV") or defaults.version_env),
         total_budget=number("RENDER_AGENT_BOOTSTRAP_BUDGET_SECONDS", defaults.total_budget),
         fetch_retry_budget=number("RENDER_AGENT_FETCH_RETRY_SECONDS", defaults.fetch_retry_budget),
@@ -254,12 +266,25 @@ class LockBusy(Exception):
 
 @dataclass(frozen=True)
 class Version:
-    tag: str
+    """`label` is a release tag (v1.2.3) or one of COMMIT_LABELS."""
+
+    label: str
     commit: str
 
     @property
     def agent_version(self) -> str:
-        return f"{self.tag}+{self.commit[:SHORT_SHA_CHARS]}"
+        return f"{self.label}+{self.commit[:SHORT_SHA_CHARS]}"
+
+    @property
+    def name(self) -> str:
+        """How a log line names it: the tag, or label+commit for a commit."""
+        return self.label if parse_tag(self.label) is not None else self.agent_version
+
+    @property
+    def dirname(self) -> str:
+        if parse_tag(self.label) is not None:
+            return self.label
+        return f"{self.label}-{self.commit[:SHORT_SHA_CHARS]}"
 
 
 class _Lock:
@@ -445,7 +470,7 @@ class Bootstrap:
             self._log(f"{exc}; nothing is installed yet, so trying the local mirror")
         version = self._choose()
         if self._is_current(version):
-            self._log(f"{version.tag} is already current")
+            self._log(f"{version.agent_version} is already current")
             return "unchanged", ""
         release_dir = self._export(version)
         venv_dir = self._ensure_venv(release_dir)
@@ -453,7 +478,7 @@ class Bootstrap:
         old = self._read_pair()
         self._switch(release_dir, venv_dir)
         self._log(f"switched to {version.agent_version}")
-        return "new", f"was {old[0].tag}" if old else "first install"
+        return "new", f"was {old[0].name}" if old else "first install"
 
     def _fetch(self) -> None:
         self._ensure_repo()
@@ -461,6 +486,10 @@ class Bootstrap:
         backoff = self._config.fetch_backoff_initial
         attempt = 0
         self._git("config", "remote.origin.url", self._config.repo_url, what="configure origin")
+        refspecs = [f"+refs/heads/{MAIN_BRANCH}:refs/remotes/origin/{MAIN_BRANCH}"]
+        pin = self._config.pin
+        if self._config.track == TRACK_TAGS or (pin is not None and parse_tag(pin) is not None):
+            refspecs.append("+refs/tags/*:refs/tags/*")
         while True:
             attempt += 1
             try:
@@ -469,8 +498,7 @@ class Bootstrap:
                     "--prune",
                     "--no-tags",
                     "origin",
-                    f"+refs/heads/{MAIN_BRANCH}:refs/remotes/origin/{MAIN_BRANCH}",
-                    "+refs/tags/*:refs/tags/*",
+                    *refspecs,
                     what="fetch",
                     check=False,
                 )
@@ -480,7 +508,7 @@ class Bootstrap:
             except StepFailed as exc:  # a timed-out fetch is a failed attempt like any other
                 failure = str(exc)
             if failure is None:
-                self._log(f"fetched tags (attempt {attempt})")
+                self._log(f"fetched (attempt {attempt})")
                 return
             waited = self._clock.monotonic() - started
             if waited + backoff >= self._config.fetch_retry_budget or self._remaining() <= backoff:
@@ -511,12 +539,21 @@ class Bootstrap:
             raise StepFailed(f"create mirror failed ({self._last_line(init)})")
 
     def _choose(self) -> Version:
-        if self._config.pin is not None:
-            pinned = self._config.pin
-            if parse_tag(pinned) is None:
-                raise StepFailed("RENDER_AGENT_PIN is not a valid release tag name")
-            self._log(f"pinned to {pinned}")
-            return self._evaluate(pinned)
+        if self._config.track not in (TRACK_MAIN, TRACK_TAGS):
+            raise StepFailed(f"RENDER_AGENT_TRACK must be {TRACK_MAIN} or {TRACK_TAGS}")
+        pinned = self._config.pin
+        if pinned is not None:
+            if parse_tag(pinned) is not None:
+                self._log(f"pinned to {pinned}")
+                return self._evaluate(pinned)
+            if PIN_COMMIT.fullmatch(pinned) is None:
+                raise StepFailed("RENDER_AGENT_PIN is not a release tag or a commit hash")
+            self._log(f"pinned to commit {pinned}")
+            return self._evaluate_commit("commit", f"{pinned}^{{commit}}")
+        if self._config.track == TRACK_MAIN:
+            version = self._evaluate_commit(MAIN_BRANCH, f"refs/remotes/origin/{MAIN_BRANCH}")
+            self._log(f"tracking {MAIN_BRANCH}: {version.agent_version}")
+            return version
         tags = self._git(
             "for-each-ref", "--format=%(refname:strip=2)", "refs/tags/", what="list tags"
         ).stdout.split()
@@ -536,6 +573,37 @@ class Bootstrap:
             return version
         raise StepFailed("no acceptable release tag")
 
+    def _evaluate_commit(self, label: str, revision: str) -> Version:
+        """A commit chosen by branch head or by pin: it must exist and be part of main."""
+        resolved = self._git(
+            "rev-parse", "--verify", "--quiet", revision, what="resolve commit", check=False
+        )
+        commit = resolved.stdout.strip()
+        if resolved.returncode != 0 or FULL_SHA.fullmatch(commit) is None:
+            raise StepFailed(f"cannot resolve {label}")
+        self._require_on_main(commit)
+        return self._checked(Version(label, commit))
+
+    def _require_on_main(self, commit: str) -> None:
+        ancestor = self._git(
+            "merge-base",
+            "--is-ancestor",
+            commit,
+            f"refs/remotes/origin/{MAIN_BRANCH}",
+            what="check ancestry",
+            check=False,
+        )
+        if ancestor.returncode == 1:
+            raise StepFailed(f"commit is not on {MAIN_BRANCH}")
+        if ancestor.returncode != 0:
+            raise StepFailed(f"cannot verify the commit is on {MAIN_BRANCH}")
+
+    @staticmethod
+    def _checked(version: Version) -> Version:
+        if len(version.agent_version) > MAX_AGENT_VERSION_CHARS:
+            raise StepFailed("version string is longer than the agent's 64 character limit")
+        return version
+
     def _evaluate(self, tag: str) -> Version:
         """Checks that need only the mirror. `tag` must already match TAG_PATTERN."""
         if parse_tag(tag) is None:
@@ -551,39 +619,26 @@ class Bootstrap:
         commit = resolved.stdout.strip()
         if resolved.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit):
             raise StepFailed("tag does not exist")
-        ancestor = self._git(
-            "merge-base",
-            "--is-ancestor",
-            commit,
-            f"refs/remotes/origin/{MAIN_BRANCH}",
-            what="check ancestry",
-            check=False,
-        )
-        if ancestor.returncode == 1:
-            raise StepFailed(f"commit is not on {MAIN_BRANCH}")
-        if ancestor.returncode != 0:
-            raise StepFailed(f"cannot verify the commit is on {MAIN_BRANCH}")
+        self._require_on_main(commit)
         shown = self._git("show", f"{commit}:pyproject.toml", what="read pyproject", check=False)
         declared = parse_project_version(shown.stdout) if shown.returncode == 0 else None
         if declared != tag[1:]:
             raise StepFailed("pyproject version does not match the tag")
-        version = Version(tag, commit)
-        if len(version.agent_version) > MAX_AGENT_VERSION_CHARS:
-            raise StepFailed("version string is longer than the agent's 64 character limit")
+        version = self._checked(Version(tag, commit))
         existing = self._read_release(self._releases / tag)
         if existing is not None and existing.commit != commit:
             raise StepFailed("tag now points at a different commit than the installed release")
         return version
 
     def _export(self, version: Version) -> Path:
-        final = self._releases / version.tag
+        final = self._releases / version.dirname
         if self._read_release(final) == version:
-            self._log(f"{version.tag} is already exported")
+            self._log(f"{version.agent_version} is already exported")
             return final
         if final.exists() or final.is_symlink():
             if self._is_referenced(final):
                 raise StepFailed("the installed release directory is damaged")
-            self._log(f"removing a damaged leftover release directory for {version.tag}")
+            self._log(f"removing a damaged leftover release directory for {version.dirname}")
             shutil.rmtree(final, ignore_errors=True)
         archive = self._temp_path("archive").with_suffix(".tar")
         staging = self._temp_path("release")
@@ -598,7 +653,7 @@ class Bootstrap:
             if not (staging / "src" / "render_agent" / "__init__.py").is_file():
                 raise StepFailed("the release has no render_agent package")
             (staging / "RELEASE").write_text(
-                f"tag={version.tag}\ncommit={version.commit}\n", encoding="utf-8"
+                f"tag={version.label}\ncommit={version.commit}\n", encoding="utf-8"
             )
             os.rename(staging, final)
         except BaseException:
@@ -606,7 +661,7 @@ class Bootstrap:
             raise
         finally:
             archive.unlink(missing_ok=True)
-        self._log(f"exported {version.tag}")
+        self._log(f"exported {version.agent_version}")
         return final
 
     @staticmethod
@@ -716,13 +771,24 @@ class Bootstrap:
             timeout=self._config.selfcheck_timeout,
             env=env,
         )
-        expected = f"render-agent {version.tag[1:]} selfcheck ok"
         if result.returncode != 0:
             detail = sanitize(result.stdout) or self._last_line(result)
             raise StepFailed(f"selfcheck failed ({detail})")
-        if result.stdout.strip() != expected:
-            raise StepFailed("selfcheck reported a different version than the tag")
-        self._log(f"selfcheck passed for {version.tag}")
+        declared = self._declared_version(version, release_dir)
+        if declared is None or result.stdout.strip() != f"render-agent {declared} selfcheck ok":
+            raise StepFailed("selfcheck reported a different version than the release declares")
+        self._log(f"selfcheck passed for {version.agent_version}")
+
+    @staticmethod
+    def _declared_version(version: Version, release_dir: Path) -> str | None:
+        """The version the release must report: the tag's, or the pyproject one for a commit."""
+        if parse_tag(version.label) is not None:
+            return version.label[1:]
+        try:
+            text = (release_dir / "pyproject.toml").read_text(encoding="utf-8")
+        except OSError:
+            return None
+        return parse_project_version(text)
 
     # --- the pair: reading, validating, switching ----------------------------------------------
 
@@ -734,7 +800,9 @@ class Bootstrap:
             return None
         values = dict(line.split("=", 1) for line in lines if "=" in line)
         tag, commit = values.get("tag", ""), values.get("commit", "")
-        if parse_tag(tag) is None or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        if (parse_tag(tag) is None and tag not in COMMIT_LABELS) or FULL_SHA.fullmatch(
+            commit
+        ) is None:
             return None
         return Version(tag, commit)
 
@@ -744,7 +812,7 @@ class Bootstrap:
             return None
         release_dir, venv_dir = release_link.resolve(), venv_link.resolve()
         version = self._read_release(release_dir)
-        if version is None or release_dir.name != version.tag:
+        if version is None or release_dir.name != version.dirname:
             return None
         if not (venv_dir / "bin" / "python").exists():
             return None
@@ -832,7 +900,7 @@ class Bootstrap:
             self._log(f"warning: pruning failed ({type(exc).__name__})")
 
     def _prune_unchecked(self) -> None:
-        names = sorted(
+        tags = sorted(
             (
                 (parsed, entry.name)
                 for entry in self._releases.iterdir()
@@ -840,7 +908,16 @@ class Bootstrap:
             ),
             reverse=True,
         )
-        keep_releases = {name for _, name in names[:KEEP_RELEASES]}
+        commits = sorted(
+            (
+                (entry.stat().st_mtime, entry.name)
+                for entry in self._releases.iterdir()
+                if entry.is_dir() and COMMIT_RELEASE_DIR.fullmatch(entry.name)
+            ),
+            reverse=True,
+        )
+        keep_releases = {name for _, name in tags[:KEEP_RELEASES]}
+        keep_releases |= {name for _, name in commits[:KEEP_RELEASES]}
         keep_venvs: set[str] = set()
         for link in (self._current, self._previous):
             if link.is_symlink():
@@ -853,7 +930,7 @@ class Bootstrap:
                 keep_venvs.add(self._lock_hash(self._releases / name))
             except OSError:
                 continue
-        for _, name in names:
+        for _, name in [*tags, *commits]:
             if name not in keep_releases:
                 shutil.rmtree(self._releases / name, ignore_errors=True)
                 self._log(f"pruned release {name}")

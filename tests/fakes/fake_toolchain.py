@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -88,7 +89,14 @@ class FakeToolchain:
             tag = dict(
                 line.split("=", 1) for line in (release / "RELEASE").read_text().splitlines()
             )["tag"]
-            version = tag[1:]
+            if tag in ("main", "commit"):
+                declared = re.search(
+                    r'^version\s*=\s*"([^"]+)"', (release / "pyproject.toml").read_text(), re.M
+                )
+                assert declared is not None
+                version = declared[1]
+            else:
+                version = tag[1:]
             if version in self.selfcheck_fails:
                 return CommandResult(
                     4, stdout="selfcheck failed: cannot import httpx (ImportError)\n"

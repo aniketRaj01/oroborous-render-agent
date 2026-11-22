@@ -62,7 +62,7 @@ uv run python scripts/demo_fake_run.py            # the real loop against in-pro
 
 ## Deployment
 
-At every boot the GPU instance runs the newest released version (`vX.Y.Z` tag on `main`), installed
+At every boot the GPU instance runs the head of `main` (`RENDER_AGENT_TRACK=tags` keeps the older "newest `vX.Y.Z` tag" mode), installed
 reproducibly from `requirements.lock`, self-checked before use, with the last good version as
 fallback. The pieces:
 
