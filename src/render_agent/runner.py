@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -64,9 +64,18 @@ FRAME_CONTENT_TYPE = "image/png"
 # The model server accepts at most this many condition images per clip (its MAX_CONDITION_IMAGES).
 MAX_CONDITION_IMAGES = 3
 
+# A clip is not started unless it would end this long before its lease does. (The Job API's lease
+# already runs about 5 minutes past the deadline the claim asked for.)
+LEASE_SAFETY_MARGIN_SECONDS = 60.0
+# After this many lease refreshes in a row without starting a clip, the fresh lease is still too
+# short for the next clip: stop looping and treat it as nothing to do (the idle rules then apply).
+MAX_REFRESHES_WITHOUT_A_CLIP = 2
+# Dropped-clip error codes for clips dropped for reasons that have no Job API code.
+NO_CODE = "none"
+
 # Reasons a run ends. The exit code follows from the reason.
 REASON_IDLE = "idle"
-REASON_DEADLINE = "deadline"
+REASON_MAX_RUN = "max_run_minutes"
 REASON_SIGNAL = "signal"
 REASON_MAX_CLIPS = "max_clips"
 REASON_MODEL_SERVER_NOT_READY = "model_server_not_ready"
@@ -75,7 +84,7 @@ REASON_AUTH_ERROR = "auth_error"
 
 _EXIT_CODES = {
     REASON_IDLE: EXIT_OK,
-    REASON_DEADLINE: EXIT_OK,
+    REASON_MAX_RUN: EXIT_OK,
     REASON_SIGNAL: EXIT_OK,
     REASON_MAX_CLIPS: EXIT_OK,
     REASON_MODEL_SERVER_NOT_READY: EXIT_SYSTEMIC,
@@ -125,6 +134,10 @@ class _ClipFailure(Exception):
 class _Dropped(Exception):
     """We do not (or may not) hold the job: nothing to report, move on."""
 
+    def __init__(self, code: str = NO_CODE) -> None:
+        super().__init__(code)
+        self.code = code
+
 
 class _Interrupted(Exception):
     """A stop signal arrived. The job is left for the same agent id to resume."""
@@ -170,22 +183,23 @@ class Runner:
         self._done = 0
         self._failed = 0
         self._dropped = 0
+        self._dropped_by_code: Counter[str] = Counter()
         self._skipped = 0
         self._consecutive_failures = 0
         self._started_at = clock.now()
-        self._deadline = self._started_at
+        self._lease_expires_at: datetime | None = None
 
     # --- public entry point --------------------------------------------------------------------
 
     def run(self, started_at: datetime) -> RunResult:
         self._started_at = started_at
-        self._deadline = started_at + timedelta(minutes=self._settings.run_deadline_minutes)
         logger.info(
             "run_start",
             extra={
                 "agent_id": self._settings.agent_id,
                 "agent_version": self._settings.agent_version,
-                "deadline_at": self._deadline.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "lease_window_minutes": self._settings.lease_window_minutes,
+                "max_run_minutes": self._settings.max_run_minutes or "none",
                 "max_clips": self._max_clips if self._max_clips is not None else "none",
             },
         )
@@ -210,27 +224,35 @@ class Runner:
         if reason is not None:
             return reason
         idle_since: datetime | None = None
+        refreshes = 0
         while True:
             if self._should_stop():
                 return self._abandon_work(REASON_SIGNAL)
             if self._max_clips is not None and self._done + self._failed >= self._max_clips:
                 return self._abandon_work(REASON_MAX_CLIPS)
-            if not self._can_fit_a_clip():
-                return self._abandon_work(REASON_DEADLINE)
+            if self._max_run_reached():
+                return self._abandon_work(REASON_MAX_RUN)
 
+            if self._work and not self._can_fit_a_clip():
+                refreshes += 1
+                self._drop_unstarted_for_new_lease()
             if self._work:
                 plan, clip = self._work.popleft()
                 if self._is_blocked(plan, clip):
                     self._skip_blocked(plan, clip)
                     continue
+                refreshes = 0
                 stop_reason = self._process_clip(plan, clip)
                 if stop_reason is not None:
                     return self._abandon_work(stop_reason)
                 continue
 
             if self._claim():
-                idle_since = None
-                continue
+                if refreshes < MAX_REFRESHES_WITHOUT_A_CLIP:
+                    idle_since = None
+                    continue
+                logger.warning("lease_window_too_short", extra={"refreshes": refreshes})
+                self._work.clear()  # re-leased by the next claim; not started, so not skipped
             now = self._clock.now()
             idle_since = idle_since or now
             idle_seconds = (now - idle_since).total_seconds()
@@ -263,11 +285,14 @@ class Runner:
         """Fill the work list from the Job API. True when it returned any clips."""
         try:
             response = self._job_api.claim(
-                deadline_at=self._deadline, max_plans=self._settings.max_plans_per_claim
+                deadline_at=self._clock.now()
+                + timedelta(minutes=self._settings.lease_window_minutes),
+                max_plans=self._settings.max_plans_per_claim,
             )
         except TransientError as exc:
             logger.warning("claim_failed", extra={"error_type": type(exc).__name__})
             return False
+        self._lease_expires_at = response.lease_expires_at
         added = 0
         for plan in response.plans:
             for clip in sorted(plan.clips, key=lambda c: c.position):
@@ -284,7 +309,29 @@ class Runner:
         )
         return added > 0
 
-    # --- deadline ------------------------------------------------------------------------------
+    # --- lease ---------------------------------------------------------------------------------
+
+    def _max_run_reached(self) -> bool:
+        limit = self._settings.max_run_minutes
+        return limit is not None and self._runtime_seconds() >= limit * 60
+
+    def _drop_unstarted_for_new_lease(self) -> None:
+        """The next clip would not finish inside the lease: forget the unstarted list. The next
+        claim returns this agent's own held clips again, with a fresh lease."""
+        logger.info(
+            "lease_refresh",
+            extra={
+                "unstarted": len(self._work),
+                "lease_left_s": round(self._lease_left_seconds()),
+                "estimate_s": round(self._clip_estimate_seconds()),
+            },
+        )
+        self._work.clear()
+
+    def _lease_left_seconds(self) -> float:
+        if self._lease_expires_at is None:
+            return float("inf")
+        return (self._lease_expires_at - self._clock.now()).total_seconds()
 
     def _clip_estimate_seconds(self) -> float:
         if not self._timings:
@@ -293,7 +340,7 @@ class Runner:
 
     def _can_fit_a_clip(self) -> bool:
         needed = timedelta(seconds=self._clip_estimate_seconds())
-        return self._clock.now() + needed <= self._deadline
+        return needed.total_seconds() + LEASE_SAFETY_MARGIN_SECONDS <= self._lease_left_seconds()
 
     def _abandon_work(self, reason: str) -> str:
         """Clips claimed but not started are left to lease expiry; say so, one line each."""
@@ -337,14 +384,14 @@ class Runner:
             upload_seconds = self._clock.monotonic() - upload_started
             self._check_stop()
             self._complete(clip, output, size, render, ids, attempt, frame)
-        except _Dropped:
-            self._give_up(clip)
+        except _Dropped as dropped:
+            self._give_up(clip, dropped.code)
             self._block_chain(plan, clip)
         except _Interrupted:
             logger.info("clip_interrupted", extra={**ids, "attempt": attempt})
             return REASON_SIGNAL
         except _CompleteUnconfirmed:
-            self._give_up(clip)
+            self._give_up(clip, "complete_unconfirmed")
             self._block_chain(plan, clip)
         except _ClipFailure as failure:
             self._report_failure(clip, failure, ids, attempt)
@@ -383,8 +430,9 @@ class Runner:
                 extra.path.unlink(missing_ok=True)
         return None
 
-    def _give_up(self, clip: Clip) -> None:
+    def _give_up(self, clip: Clip, code: str = NO_CODE) -> None:
         self._dropped += 1
+        self._dropped_by_code[code] += 1
         self._given_up.add(clip.job_id)
 
     def _check_stop(self) -> None:
@@ -399,7 +447,7 @@ class Runner:
                 "clip_dropped",
                 extra={**ids, "step": "start", "error_code": exc.code or type(exc).__name__},
             )
-            raise _Dropped from None
+            raise _Dropped(exc.code or type(exc).__name__) from None
         logger.info(
             "clip_start",
             extra={**ids, "attempt": response.attempt, "resumed": str(clip.resumed).lower()},
@@ -697,10 +745,11 @@ class Runner:
         frame: _Frame | None = None,
     ) -> None:
         info = RenderInfo(**render.model_dump())
-        retry_until = min(
-            self._deadline,
-            self._clock.now() + timedelta(minutes=self._settings.complete_retry_budget_minutes),
+        retry_until = self._clock.now() + timedelta(
+            minutes=self._settings.complete_retry_budget_minutes
         )
+        if self._lease_expires_at is not None:
+            retry_until = min(retry_until, self._lease_expires_at)
         reuploaded = False
         transient_failures = 0
         while True:
@@ -744,7 +793,7 @@ class Runner:
                     "clip_dropped",
                     extra={**ids, "step": "complete", "error_code": exc.code or "unknown"},
                 )
-                raise _Dropped from None
+                raise _Dropped(exc.code or "unknown") from None
             except TransientError as exc:
                 transient_failures += 1
                 if self._should_stop() or self._clock.now() >= retry_until:
@@ -825,6 +874,10 @@ class Runner:
                 "failed": self._failed,
                 "skipped": self._skipped,
                 "dropped": self._dropped,
+                "dropped_by_code": ",".join(
+                    f"{code}:{count}" for code, count in sorted(self._dropped_by_code.items())
+                )
+                or "none",
                 "runtime_s": round(self._runtime_seconds()),
                 "reason": reason,
             },

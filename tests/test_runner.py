@@ -72,7 +72,7 @@ def test_clips_run_in_plan_then_position_order_and_claim_carries_deadline(rig: R
     import json
 
     claim = json.loads(rig.fake_api.calls("/v1/claim")[0].body)
-    assert claim["deadlineAt"] == "2026-10-18T06:55:00Z" and claim["maxPlans"] == 10
+    assert claim["deadlineAt"] == "2026-10-18T08:30:00Z" and claim["maxPlans"] == 10
 
 
 def test_claims_again_immediately_when_the_list_drains(tmp_path: Path) -> None:
@@ -114,30 +114,11 @@ def test_a_failing_claim_is_treated_like_an_empty_one(rig: Rig) -> None:
     assert result.reason == "idle" and result.exit_code == 0
 
 
-# --- deadline ----------------------------------------------------------------------------------
-
-
-def test_a_clip_that_cannot_finish_before_the_deadline_is_not_started(tmp_path: Path) -> None:
-    rig = make_rig(tmp_path, RUN_DEADLINE_MINUTES="10")
-    plan = rig.fake_api.add_plan(1, clips=3)
-    result = rig.run()
-    # clip time = 240 render + 10 upload = 250 s; after one clip the estimate is 250 * 1.25
-    assert (result.done, result.skipped, result.reason, result.exit_code) == (2, 1, "deadline", 0)
-    assert rig.model.requests[-1].job_id == plan.jobs[1].job_id
-    assert len(rig.fake_api.calls("/v1/claim")) == 1  # no claim near the deadline
-    assert plan.jobs[2].status == "pending"  # left to lease expiry, never started
-
-
-def test_nothing_is_claimed_when_not_even_one_default_estimate_fits(tmp_path: Path) -> None:
-    rig = make_rig(tmp_path, RUN_DEADLINE_MINUTES="4")
-    rig.fake_api.add_plan(1, clips=1)
-    result = rig.run()
-    assert (result.done, result.reason, result.exit_code) == (0, "deadline", 0)
-    assert rig.fake_api.requests == []
+# --- lease -------------------------------------------------------------------------------------
 
 
 def test_estimate_uses_the_mean_of_the_last_five_timings(tmp_path: Path) -> None:
-    rig = make_rig(tmp_path, RUN_DEADLINE_MINUTES="55")
+    rig = make_rig(tmp_path)
     rig.fake_api.add_plan(1, clips=1)
     runner = rig.runner()
     assert runner._clip_estimate_seconds() == 300  # setting, before any timing
@@ -349,13 +330,15 @@ def test_complete_retry_gives_up_after_the_budget_and_moves_on(tmp_path: Path) -
     assert [j.status for j in jobs] == ["pending", "pending"]
 
 
-def test_complete_retries_are_bounded_by_the_run_deadline(tmp_path: Path) -> None:
-    rig = make_rig(tmp_path, RUN_DEADLINE_MINUTES="10", COMPLETE_RETRY_BUDGET_MINUTES="30")
+def test_complete_retries_are_bounded_by_the_lease(tmp_path: Path) -> None:
+    rig = make_rig(tmp_path, LEASE_WINDOW_MINUTES="10", COMPLETE_RETRY_BUDGET_MINUTES="30")
     rig.fake_api.add_plan(1, clips=1)
     rig.fake_api.inject_fault("/v1/complete", *[httpx.Response(503)] * 500)
     result = rig.run()
     assert result.dropped == 1
-    assert rig.clock.now() <= rig.clock.now().replace(hour=6, minute=11, second=0)
+    assert rig.clock.now() <= rig.clock.now().replace(
+        hour=6, minute=21, second=0
+    )  # lease end + the idle wait
 
 
 def test_complete_carries_the_verified_size_and_render_info(rig: Rig) -> None:

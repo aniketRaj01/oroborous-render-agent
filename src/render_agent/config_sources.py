@@ -25,6 +25,9 @@ SETTING_NAMES = frozenset(
     if isinstance(field.validation_alias, str)
 )
 
+# Settings that were removed. An instance's agent.env may still have them: accept, ignore, warn.
+DEPRECATED_SETTINGS = ("RUN_DEADLINE_MINUTES",)
+
 SsmFetch = Callable[[str, str], dict[str, str]]
 
 
@@ -32,6 +35,7 @@ SsmFetch = Callable[[str, str], dict[str, str]]
 class LoadedSettings:
     settings: Settings
     sources: tuple[str, ...]
+    deprecated: tuple[str, ...] = ()
 
 
 def fetch_ssm_parameters(
@@ -106,10 +110,10 @@ def load_settings(
         region = control(SSM_REGION_VAR)
         if not region:
             raise ConfigError([(SSM_REGION_VAR, "missing")])
-        ssm_values = _only_settings(ssm_fetch(prefix, region))
+        ssm_values = _clean(ssm_fetch(prefix, region))
 
     layers = (
-        ("ssm", ssm_values),
+        ("ssm", _only_settings(ssm_values)),
         ("dotenv", _only_settings(dotenv)),
         ("config_file", _only_settings(file_values)),
         ("env", _only_settings(env)),
@@ -121,4 +125,11 @@ def load_settings(
             used.append(name)
             merged.update(values)
     used.reverse()
-    return LoadedSettings(settings=build_settings(dict(merged)), sources=tuple(used))
+    deprecated = tuple(
+        name
+        for name in DEPRECATED_SETTINGS
+        if any(name in values for values in (env, file_values, dotenv, ssm_values))
+    )
+    return LoadedSettings(
+        settings=build_settings(dict(merged)), sources=tuple(used), deprecated=deprecated
+    )

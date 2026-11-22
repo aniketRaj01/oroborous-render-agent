@@ -234,6 +234,28 @@ Do this on the real instance, after setup and the image is built from it:
 3. Optionally test the safety nets: set `RENDER_AGENT_PIN` to an older tag or commit, restart,
    confirm the version changes; remove it, restart, confirm it returns.
 
+## How long a run lasts
+
+A run has **no wall-clock limit**: the agent works until a claim has nothing left for
+`IDLE_EXIT_MINUTES` (5), then exits (and powers off with `AUTO_SHUTDOWN_ON_IDLE`). Each claim asks for
+a lease of `LEASE_WINDOW_MINUTES` (default 150; at most 170, because the Job API ignores a deadline
+more than 180 minutes away and then leases only 90). The Job API keeps the lease about 5 minutes past
+that. The agent never starts a clip that cannot finish inside the current lease; when the next one
+would not, it claims again (the claim returns this agent's own held clips and re-leases them) and
+carries on, so any backlog is worked in one run. The journal shows `lease_refresh`. If the window is
+shorter than a clip it logs `lease_window_too_short` and falls back to the idle rules.
+
+- `RUN_DEADLINE_MINUTES` in an existing `agent.env` is **deprecated and ignored**: start-up logs
+  `setting_deprecated` once and carries on. Delete the line when convenient.
+- `MAX_RUN_MINUTES` (unset by default) is an operator's choice: after that long no new clip is
+  started and the run ends like an idle exit, so shutdown still happens. Clips claimed but not started
+  are left to lease expiry and picked up at the next boot.
+- A hung render is bounded by `MODEL_SERVER_GENERATE_TIMEOUT_SECONDS`, not by the run.
+- `run_summary` ends every run and now includes `dropped_by_code=<code>:<n>,...` (for example
+  `wrong_state:2`), so a dropped clip can be explained from the journal.
+- These are `src/` changes: they arrive with the next service start, no `install.sh` needed. Restarting
+  the service mid-run is safe: the same agent id resumes its clips.
+
 ## Opt-in: dead-man timer
 
 `render-agent-deadman.timer` powers the instance off 65 minutes after boot, as a last-resort safety
@@ -265,11 +287,11 @@ default**.
 After an idle exit it writes `/run/render-agent/poweroff-requested`; the unit's `ExecStopPost` (the
 `+` prefix runs it as root) starts the helper, which powers off only if that file exists, the service
 ended with exit 0, and the guard file below is absent. Nothing else writes the marker: a crash, a
-signal, `systemctl stop`, the run deadline, `--max-clips`, a Job API or configuration error never
+signal, `systemctl stop`, `--max-clips`, a Job API or configuration error never
 power off. The instance also stays up when the bootstrap fell back to an older version
 (`AGENT_BOOTSTRAP_FALLBACK=true` in `/run/render-agent/version.env`), when a clip output file is still
-in the scratch directory, when claimed clips were left unstarted, or when the model server is not
-ready: the log says why. The marker lives in `/run`, so it is gone after any stop or reboot and can
+in the scratch directory, when claimed clips were left unstarted at an idle exit (cannot normally
+happen), or when the model server is not ready: the log says why. The marker lives in `/run`, so it is gone after any stop or reboot and can
 never power off the next boot.
 
 **Keep the instance up** (debugging over SSH): `sudo touch /etc/render-agent/no-shutdown`; remove the

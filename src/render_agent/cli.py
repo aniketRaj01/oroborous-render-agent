@@ -139,6 +139,9 @@ def _run(
         out.write(f"{exc}\n")
         return EXIT_CONFIG
 
+    for name in loaded.deprecated:
+        logger.warning("setting_deprecated", extra={"setting": name, "action": "ignored"})
+
     def on_signal(signum: int, frame: FrameType | None) -> None:
         logger.info("signal_received", extra={"signal": signal.Signals(signum).name})
         interrupt.set()

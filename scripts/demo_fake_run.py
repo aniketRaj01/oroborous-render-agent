@@ -2,10 +2,10 @@
 
 Scenario (two process lifetimes of the same agent id):
   plans 101 (2 clips), 102 (2 clips), 103 (1 clip)
-  run 1  one render failure (101/1), one out-of-memory (102/0), then the deadline arrives and
-         a clip that cannot finish in time is skipped, not started
-  run 2  a restart: the skipped clip comes back as "resumed", then the queue stays empty and
-         the agent exits on the idle limit
+  run 1  one render failure (101/1), one out-of-memory (102/0); the 20 minute lease window runs
+         short, so the agent claims again (re-leasing its held clips) and finishes the rest, then
+         exits on the idle limit
+  run 2  a restart: nothing is left, the queue stays empty and the agent exits on the idle limit
 
 Usage: uv run python scripts/demo_fake_run.py
 """
@@ -100,12 +100,12 @@ def main() -> None:
         "JOB_API_URL": FAKE_URL,
         "AGENT_ID": AGENT_ID,
         "SCRATCH_DIR": scratch,
-        "RUN_DEADLINE_MINUTES": "20",
+        "LEASE_WINDOW_MINUTES": "20",
         "IDLE_EXIT_MINUTES": "3",
     }
     prepare_scratch_dir(Path(scratch))
 
-    banner("run 1: deadline 20 min, 5 clips queued (render 240 s + upload 10 s each)")
+    banner("run 1: lease window 20 min, 5 clips queued (render 240 s + upload 10 s each)")
     show(make_runner(env, clock, api, model).run(clock.now()))
 
     clock.advance(60)
