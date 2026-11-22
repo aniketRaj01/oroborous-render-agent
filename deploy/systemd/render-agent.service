@@ -17,6 +17,9 @@ RuntimeDirectory=render-agent
 # agent.env: AGENT_ID and the SSM location of the Job API URL (no URL here). version.env:
 # AGENT_VERSION=main+<12 hex> (or <tag>+<12 hex>), written by the bootstrap just before the agent starts.
 # systemd reads each file when it starts the process, so the agent sees the fresh version.env.
+# deploy.env is also read by the bootstrap; here it lets the operator set AUTO_SHUTDOWN_ON_IDLE in
+# one place. agent.env comes after it and wins.
+EnvironmentFile=-/etc/render-agent/deploy.env
 EnvironmentFile=-/etc/render-agent/agent.env
 EnvironmentFile=-/run/render-agent/version.env
 Environment=PYTHONPATH=/opt/render-agent/current/src
@@ -30,6 +33,10 @@ WorkingDirectory=/var/lib/render-agent
 ExecStartPre=/usr/bin/python3 /opt/render-agent/bootstrap.py
 TimeoutStartSec=900
 ExecStart=/opt/render-agent/current-venv/bin/python -m render_agent run
+# Opt-in power off after an idle exit (AUTO_SHUTDOWN_ON_IDLE). "+" runs it as root without giving the
+# agent any privilege; "-" ignores its failure. It does nothing unless the agent left its marker
+# file, which only the idle exit does. The script is root-owned, outside the service user's reach.
+ExecStopPost=-+/usr/local/sbin/render-agent-poweroff
 
 Restart=on-failure
 RestartSec=30

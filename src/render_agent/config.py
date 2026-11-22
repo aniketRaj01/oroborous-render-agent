@@ -98,6 +98,14 @@ class Settings(BaseSettings):
         default=60.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
     )
     idle_exit_minutes: float = Field(default=5.0, gt=0, validation_alias="IDLE_EXIT_MINUTES")
+    # Power the instance off after an idle exit (see shutdown.py). Off unless the operator opts in.
+    auto_shutdown_on_idle: bool = Field(default=False, validation_alias="AUTO_SHUTDOWN_ON_IDLE")
+    auto_shutdown_grace_seconds: float = Field(
+        default=10.0, ge=0, le=300, validation_alias="AUTO_SHUTDOWN_GRACE_SECONDS"
+    )
+    # Set by the bootstrap (version.env) when it could not move to the newest version and kept the
+    # one that was already working: someone should look, so the instance stays up.
+    bootstrap_fallback: bool = Field(default=False, validation_alias="AGENT_BOOTSTRAP_FALLBACK")
     # The Job API ignores a deadline more than 180 minutes away, so stay well inside that.
     run_deadline_minutes: float = Field(
         default=55.0, gt=0, le=170, validation_alias="RUN_DEADLINE_MINUTES"

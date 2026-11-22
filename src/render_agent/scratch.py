@@ -15,6 +15,18 @@ _CLIP_FILE = re.compile(
 )
 
 
+_RENDER_OUTPUT = re.compile(r"^\d+-\d+\.mp4$")
+
+
+def unfinished_output_files(path: Path) -> int:
+    """Rendered-clip files still in the scratch directory. A finished clip's file is always
+    deleted, so any left mean the model server may still be writing one."""
+    try:
+        return sum(1 for entry in path.iterdir() if _RENDER_OUTPUT.match(entry.name))
+    except OSError:
+        return 0
+
+
 def prepare_scratch_dir(path: Path) -> None:
     """Create the directory 0700 and remove clip files left over from a previous run.
 

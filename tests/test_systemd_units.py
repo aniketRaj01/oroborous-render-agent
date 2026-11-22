@@ -57,6 +57,7 @@ def test_the_service_runs_as_the_install_time_user(service: Unit) -> None:
 
 def test_environment_files_are_optional_and_the_version_file_comes_last(service: Unit) -> None:
     assert service["Service"]["EnvironmentFile"] == [
+        "-/etc/render-agent/deploy.env",
         "-/etc/render-agent/agent.env",
         "-/run/render-agent/version.env",
     ]
@@ -109,9 +110,12 @@ def test_the_service_starts_at_boot(service: Unit) -> None:
     assert only(service, "Install", "WantedBy") == "multi-user.target"
 
 
-def test_the_service_does_not_power_the_machine_off() -> None:
-    text = SERVICE.read_text()
-    assert "SuccessAction" not in text and "poweroff" not in text
+def test_the_service_powers_off_only_through_the_root_owned_helper(service: Unit) -> None:
+    assert "SuccessAction" not in SERVICE.read_text()
+    # "+" runs the helper as root without giving the agent any privilege; "-" ignores its failure.
+    assert service["Service"]["ExecStopPost"] == ["-+/usr/local/sbin/render-agent-poweroff"]
+    assert only(service, "Service", "NoNewPrivileges") == "yes"
+    assert "User" in service["Service"]
 
 
 def test_deadman_timer_fires_65_minutes_after_boot_and_is_not_self_enabling() -> None:

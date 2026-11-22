@@ -11,6 +11,7 @@ from render_agent.job_api.client import create_job_api_client
 from render_agent.model_server.client import ModelServer, create_model_server
 from render_agent.runner import Runner, RunResult
 from render_agent.scratch import prepare_scratch_dir
+from render_agent.shutdown import clear_marker, request_poweroff_after_idle
 from render_agent.uploader import S3Uploader, Uploader
 
 
@@ -27,13 +28,23 @@ def run_agent(
 ) -> RunResult:
     """Build the real collaborators (unless given) and run the loop. Raises ConfigError."""
     prepare_scratch_dir(settings.scratch_dir)
+    clear_marker()
+    model_server = model_server or create_model_server(settings)
     runner = Runner(
         settings=settings,
         job_api=create_job_api_client(settings, clock=clock, transport=job_api_transport),
-        model_server=model_server or create_model_server(settings),
+        model_server=model_server,
         uploader=uploader or S3Uploader(),
         clock=clock,
         should_stop=should_stop,
         max_clips=max_clips,
     )
-    return runner.run(started_at)
+    result = runner.run(started_at)
+    request_poweroff_after_idle(
+        result,
+        settings=settings,
+        model_server=model_server,
+        clock=clock,
+        should_stop=should_stop,
+    )
+    return result

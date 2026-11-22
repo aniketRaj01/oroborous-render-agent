@@ -243,12 +243,54 @@ or `sudo systemctl enable --now render-agent-deadman.timer`. It does nothing whi
 `sudo touch /etc/render-agent/no-shutdown`. Disable with
 `sudo systemctl disable --now render-agent-deadman.timer`.
 
-### Unverified: powering off when the agent ends
+## Opt-in: power off when the agent has no work
 
-Stopping the instance when the agent finishes is handled outside this repository. systemd offers
-`SuccessAction=poweroff` for a service. It has **not** been tried here, and it is not known whether a
-manual `systemctl stop render-agent` also triggers it. Treat it as an opt-in experiment, on a
-throwaway instance first, never as a default.
+After `IDLE_EXIT_MINUTES` (5) with nothing to claim the agent exits 0 and the instance keeps
+running (and billing). With `AUTO_SHUTDOWN_ON_IDLE=true` that idle exit also powers the instance
+off. The instance's shutdown behaviour is "stop", so an operating-system poweroff stops it (it is
+never terminated); no AWS call is made and the instance role needs no EC2 permission. It is **off by
+default**.
+
+**Turn it on** (once per instance):
+
+1. Put `AUTO_SHUTDOWN_ON_IDLE=true` in `/etc/render-agent/deploy.env` (optionally
+   `AUTO_SHUTDOWN_GRACE_SECONDS=10`, the wait before the poweroff so the last log lines are written).
+2. Run `sudo deploy/install.sh` (same options as the first install) from a checkout that has this
+   feature. It installs the root-owned helper `/usr/local/sbin/render-agent-poweroff` and the updated
+   unit, keeps your `deploy.env` as it is, and never turns the flag on by itself. Re-running it is
+   harmless.
+3. The setting is read when the service starts (next boot, or `sudo systemctl restart render-agent`).
+
+**How it works.** The agent runs unprivileged (and with `NoNewPrivileges`, so `sudo` would not work).
+After an idle exit it writes `/run/render-agent/poweroff-requested`; the unit's `ExecStopPost` (the
+`+` prefix runs it as root) starts the helper, which powers off only if that file exists, the service
+ended with exit 0, and the guard file below is absent. Nothing else writes the marker: a crash, a
+signal, `systemctl stop`, the run deadline, `--max-clips`, a Job API or configuration error never
+power off. The instance also stays up when the bootstrap fell back to an older version
+(`AGENT_BOOTSTRAP_FALLBACK=true` in `/run/render-agent/version.env`), when a clip output file is still
+in the scratch directory, when claimed clips were left unstarted, or when the model server is not
+ready: the log says why. The marker lives in `/run`, so it is gone after any stop or reboot and can
+never power off the next boot.
+
+**Keep the instance up** (debugging over SSH): `sudo touch /etc/render-agent/no-shutdown`; remove the
+file to re-enable. The agent checks it before and after the grace wait, and the helper checks it
+again as root. The dead-man timer honours the same file.
+
+**What it looks like in the journal** (`journalctl -u render-agent -b`):
+
+```
+idle_exit idle_seconds=300
+run_summary ... reason=idle
+idle exit: powering off instance
+poweroff-if-requested: idle exit, powering off instance
+```
+
+and when it chooses to stay up: `idle_exit_staying_up why=...`. If the poweroff command itself
+fails the helper logs `poweroff failed; the instance stays up` and the service still ends normally.
+
+A stopped instance is started again by the boot Lambda at its next scheduled boot; the agent then
+starts as usual (nothing is kept on disk between boots that could stop it again). The boot Lambda's
+alarm for an instance that has run too long remains the backstop if a poweroff ever fails.
 
 ## Troubleshooting
 

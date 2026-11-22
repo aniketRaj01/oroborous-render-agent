@@ -778,7 +778,10 @@ def test_main_mode_keeps_the_working_commit_when_the_new_one_fails_its_selfcheck
     world.tools.selfcheck_fails = {"0.1.1"}
     boot = world.boot(track="main")
     assert boot.code == 0 and "(fallback: selfcheck failed" in boot.final
-    assert world.agent_version_file() == f"AGENT_VERSION=main+{good[:12]}\n"
+    # A fallback is recorded so the agent does not power the instance off after an idle exit.
+    assert world.agent_version_file() == (
+        f"AGENT_VERSION=main+{good[:12]}\nAGENT_BOOTSTRAP_FALLBACK=true\n"
+    )
 
 
 def test_a_pin_accepts_a_commit_hash_that_is_on_main(world: World) -> None:
