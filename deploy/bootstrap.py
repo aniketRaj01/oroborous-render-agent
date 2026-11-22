@@ -877,7 +877,7 @@ class Bootstrap:
             return 1
         if restored:
             status, reason = "fallback", f"{reason}; {restored}" if reason else restored
-        self._write_version_env(version)
+        self._write_version_env(version, fallback=status == "fallback")
         if locked:
             self._prune()
         suffix = {"new": f"new; {reason}", "unchanged": "unchanged"}.get(
@@ -886,10 +886,14 @@ class Bootstrap:
         self._log(f"running {version.agent_version} ({suffix})")
         return 0
 
-    def _write_version_env(self, version: Version) -> None:
+    def _write_version_env(self, version: Version, *, fallback: bool = False) -> None:
+        text = f"AGENT_VERSION={version.agent_version}\n"
+        if fallback:
+            # Tells the agent not to power the instance off after an idle exit: look at it first.
+            text += "AGENT_BOOTSTRAP_FALLBACK=true\n"
         try:
             self._config.version_env.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(self._config.version_env, f"AGENT_VERSION={version.agent_version}\n")
+            atomic_write(self._config.version_env, text)
         except OSError as exc:
             self._log(f"warning: cannot write the version file ({type(exc).__name__})")
 

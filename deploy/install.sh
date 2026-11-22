@@ -227,6 +227,9 @@ ensure_dir /etc/render-agent 0755
 act mkdir -p "$(path_of /etc/systemd/system)"
 
 install_file "${script_dir}/bootstrap.py" /opt/render-agent/bootstrap.py 0755 "${owner}"
+# Root-owned and outside every directory the service user owns: it runs as root (see its header).
+act mkdir -p "$(path_of /usr/local/sbin)"
+install_file "${script_dir}/poweroff-if-requested.sh" /usr/local/sbin/render-agent-poweroff 0755
 install_unit "${script_dir}/systemd/render-agent.service" render-agent.service
 install_unit "${script_dir}/systemd/render-agent-deadman.service" render-agent-deadman.service
 install_unit "${script_dir}/systemd/render-agent-deadman.timer" render-agent-deadman.timer
