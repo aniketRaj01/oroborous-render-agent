@@ -49,7 +49,7 @@ uv run python -m render_agent check             # one signed claim (maxPlans=1),
 uv run python -m render_agent run [--max-clips N]
 ```
 
-Waits for the local model server, then claims work from the Job API and renders, uploads and reports it clip by clip until the queue is idle (no wall-clock limit; each claim leases `LEASE_WINDOW_MINUTES` and the agent claims again before a lease runs short), or a signal, `--max-clips` or a systemic failure stops it. Exit codes: 0 normal end, 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure. The model server's HTTP contract is in [`docs/model-server-contract.md`](docs/model-server-contract.md); the loop's behaviour and settings are described in `CLAUDE.md` ("Operating decisions for the run loop").
+Waits for the local model server, then claims work from the Job API and renders, uploads and reports it clip by clip until the queue has been empty for `IDLE_EXIT_SECONDS` (30; no wall-clock limit; each claim leases `LEASE_WINDOW_MINUTES` and the agent claims again before a lease runs short), or a signal, `--max-clips` or a systemic failure stops it. Exit codes: 0 normal end, 2 configuration error, 3 Job API auth error, 4 unexpected error, 5 systemic failure. The model server's HTTP contract is in [`docs/model-server-contract.md`](docs/model-server-contract.md); the loop's behaviour and settings are described in `CLAUDE.md` ("Operating decisions for the run loop").
 
 For local experiments without a GPU:
 

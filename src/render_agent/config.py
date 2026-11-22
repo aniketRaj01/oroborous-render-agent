@@ -95,9 +95,14 @@ class Settings(BaseSettings):
         default=10, ge=1, le=50, validation_alias="MAX_PLANS_PER_CLAIM"
     )
     empty_claim_wait_seconds: float = Field(
-        default=60.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
+        default=10.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
     )
-    idle_exit_minutes: float = Field(default=5.0, gt=0, validation_alias="IDLE_EXIT_MINUTES")
+    # Only claims the Job API answered with no clips count toward this.
+    idle_exit_seconds: float = Field(default=30.0, gt=0, validation_alias="IDLE_EXIT_SECONDS")
+    # Consecutive failed claims (no answer at all) for this long end the run, without a poweroff.
+    claim_failure_patience_minutes: float = Field(
+        default=5.0, gt=0, validation_alias="CLAIM_FAILURE_PATIENCE_MINUTES"
+    )
     # Power the instance off after an idle exit (see shutdown.py). Off unless the operator opts in.
     auto_shutdown_on_idle: bool = Field(default=False, validation_alias="AUTO_SHUTDOWN_ON_IDLE")
     auto_shutdown_grace_seconds: float = Field(

@@ -26,7 +26,7 @@ SETTING_NAMES = frozenset(
 )
 
 # Settings that were removed. An instance's agent.env may still have them: accept, ignore, warn.
-DEPRECATED_SETTINGS = ("RUN_DEADLINE_MINUTES",)
+DEPRECATED_SETTINGS = ("RUN_DEADLINE_MINUTES", "IDLE_EXIT_MINUTES")
 
 SsmFetch = Callable[[str, str], dict[str, str]]
 

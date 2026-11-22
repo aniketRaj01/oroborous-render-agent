@@ -101,7 +101,7 @@ def main() -> None:
         "AGENT_ID": AGENT_ID,
         "SCRATCH_DIR": scratch,
         "LEASE_WINDOW_MINUTES": "20",
-        "IDLE_EXIT_MINUTES": "3",
+        "IDLE_EXIT_SECONDS": "180",
     }
     prepare_scratch_dir(Path(scratch))
 

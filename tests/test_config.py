@@ -189,8 +189,9 @@ def test_run_loop_defaults() -> None:
     assert settings.model_server_generate_timeout_seconds == 1200
     assert str(settings.scratch_dir) == "/tmp/render-agent"
     assert settings.max_plans_per_claim == 10
-    assert settings.empty_claim_wait_seconds == 60
-    assert settings.idle_exit_minutes == 5
+    assert settings.empty_claim_wait_seconds == 10
+    assert settings.idle_exit_seconds == 30
+    assert settings.claim_failure_patience_minutes == 5
     assert settings.lease_window_minutes == 150 and settings.max_run_minutes is None
     assert settings.clip_time_estimate_seconds == 300
     assert settings.max_consecutive_failures == 3
@@ -230,7 +231,9 @@ def test_model_server_url_must_be_a_plain_loopback_url(url: str, kind: str) -> N
         ("MAX_CONSECUTIVE_FAILURES", "0"),
         ("LEASE_WINDOW_MINUTES", "171"),
         ("LEASE_WINDOW_MINUTES", "0"),
-        ("IDLE_EXIT_MINUTES", "-1"),
+        ("IDLE_EXIT_SECONDS", "-1"),
+        ("CLAIM_FAILURE_PATIENCE_MINUTES", "0"),
+        ("MAX_RUN_MINUTES", "0"),
         ("EMPTY_CLAIM_WAIT_SECONDS", "0"),
         ("MODEL_SERVER_GENERATE_TIMEOUT_SECONDS", "0"),
         ("MODEL_SERVER_HEALTH_POLL_SECONDS", "x"),

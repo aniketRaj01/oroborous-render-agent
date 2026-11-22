@@ -237,7 +237,7 @@ Do this on the real instance, after setup and the image is built from it:
 ## How long a run lasts
 
 A run has **no wall-clock limit**: the agent works until a claim has nothing left for
-`IDLE_EXIT_MINUTES` (5), then exits (and powers off with `AUTO_SHUTDOWN_ON_IDLE`). Each claim asks for
+`IDLE_EXIT_SECONDS` (30: it re-checks every `EMPTY_CLAIM_WAIT_SECONDS`, 10), then exits (and powers off with `AUTO_SHUTDOWN_ON_IDLE`). Each claim asks for
 a lease of `LEASE_WINDOW_MINUTES` (default 150; at most 170, because the Job API ignores a deadline
 more than 180 minutes away and then leases only 90). The Job API keeps the lease about 5 minutes past
 that. The agent never starts a clip that cannot finish inside the current lease; when the next one
@@ -245,8 +245,13 @@ would not, it claims again (the claim returns this agent's own held clips and re
 carries on, so any backlog is worked in one run. The journal shows `lease_refresh`. If the window is
 shorter than a clip it logs `lease_window_too_short` and falls back to the idle rules.
 
-- `RUN_DEADLINE_MINUTES` in an existing `agent.env` is **deprecated and ignored**: start-up logs
-  `setting_deprecated` once and carries on. Delete the line when convenient.
+- `RUN_DEADLINE_MINUTES` and `IDLE_EXIT_MINUTES` in an existing `agent.env` are **deprecated and
+  ignored**: start-up logs `setting_deprecated` once for each and carries on. Delete the lines when
+  convenient (the old 5-minute idle patience is now `IDLE_EXIT_SECONDS`, 30).
+- Only a claim the Job API answered with "no clips" counts toward the idle exit. A claim that fails
+  (network, 5xx, throttling) does not, and breaks the run of empty answers. If claims keep failing for
+  `CLAIM_FAILURE_PATIENCE_MINUTES` (5) the run ends with `job_api_unreachable` (exit 0, an error in the
+  journal) and the instance is **not** powered off: look at the Job API, then restart the service.
 - `MAX_RUN_MINUTES` (unset by default) is an operator's choice: after that long no new clip is
   started and the run ends like an idle exit, so shutdown still happens. Clips claimed but not started
   are left to lease expiry and picked up at the next boot.
@@ -267,7 +272,7 @@ or `sudo systemctl enable --now render-agent-deadman.timer`. It does nothing whi
 
 ## Opt-in: power off when the agent has no work
 
-After `IDLE_EXIT_MINUTES` (5) with nothing to claim the agent exits 0 and the instance keeps
+After `IDLE_EXIT_SECONDS` (30) with nothing to claim the agent exits 0 and the instance keeps
 running (and billing). With `AUTO_SHUTDOWN_ON_IDLE=true` that idle exit also powers the instance
 off. The instance's shutdown behaviour is "stop", so an operating-system poweroff stops it (it is
 never terminated); no AWS call is made and the instance role needs no EC2 permission. It is **off by
@@ -301,7 +306,7 @@ again as root. The dead-man timer honours the same file.
 **What it looks like in the journal** (`journalctl -u render-agent -b`):
 
 ```
-idle_exit idle_seconds=300
+idle_exit idle_seconds=30
 run_summary ... reason=idle
 idle exit: powering off instance
 poweroff-if-requested: idle exit, powering off instance

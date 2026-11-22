@@ -76,7 +76,7 @@ def test_clips_run_in_plan_then_position_order_and_claim_carries_deadline(rig: R
 
 
 def test_claims_again_immediately_when_the_list_drains(tmp_path: Path) -> None:
-    rig = make_rig(tmp_path, MAX_PLANS_PER_CLAIM="1", IDLE_EXIT_MINUTES="1")
+    rig = make_rig(tmp_path, MAX_PLANS_PER_CLAIM="1")
     for plan_id in (1, 2, 3):
         rig.fake_api.add_plan(plan_id, clips=1)
     result = rig.run()
@@ -84,16 +84,16 @@ def test_claims_again_immediately_when_the_list_drains(tmp_path: Path) -> None:
     # three claims that return work, then empty ones until the idle limit
     sequence = [r.path for r in rig.fake_api.requests]
     assert sequence[:3] == ["/v1/claim", "/v1/start", "/v1/complete"]
-    assert sequence.count("/v1/claim") == 3 + 2
-    assert rig.clock.sleeps == [60.0]  # only the idle wait; no waiting between busy claims
+    assert sequence.count("/v1/claim") == 3 + 4  # empty answers at 0, 10, 20 and 30 seconds
+    assert rig.clock.sleeps == [10.0] * 3  # only the idle waits; none between busy claims
 
 
-def test_empty_claims_wait_60_seconds_and_exit_after_5_idle_minutes(rig: Rig) -> None:
+def test_empty_claims_wait_10_seconds_and_exit_after_30_idle_seconds(rig: Rig) -> None:
     result = rig.run()
     assert (result.exit_code, result.reason) == (0, "idle")
-    assert len(rig.fake_api.calls("/v1/claim")) == 6
-    assert rig.clock.sleeps == [60.0] * 5
-    assert result.runtime_seconds == 300
+    assert len(rig.fake_api.calls("/v1/claim")) == 4
+    assert rig.clock.sleeps == [10.0] * 3
+    assert result.runtime_seconds == 30
 
 
 def test_finding_work_resets_the_idle_timer(rig: Rig) -> None:
@@ -104,14 +104,8 @@ def test_finding_work_resets_the_idle_timer(rig: Rig) -> None:
     rig.clock.on_sleep = add_work_after_two_waits
     result = rig.run()
     assert result.done == 1 and result.reason == "idle"
-    # 2 empty claims, 1 with work, then a full 5 idle minutes again (6 empty claims)
-    assert len(rig.fake_api.calls("/v1/claim")) == 2 + 1 + 6
-
-
-def test_a_failing_claim_is_treated_like_an_empty_one(rig: Rig) -> None:
-    rig.fake_api.inject_fault("/v1/claim", *[httpx.Response(503)] * 5)
-    result = rig.run()
-    assert result.reason == "idle" and result.exit_code == 0
+    # 2 empty claims, 1 with work, then a full 30 idle seconds again (4 empty claims)
+    assert len(rig.fake_api.calls("/v1/claim")) == 2 + 1 + 4
 
 
 # --- lease -------------------------------------------------------------------------------------

@@ -76,6 +76,7 @@ NO_CODE = "none"
 # Reasons a run ends. The exit code follows from the reason.
 REASON_IDLE = "idle"
 REASON_MAX_RUN = "max_run_minutes"
+REASON_JOB_API_UNREACHABLE = "job_api_unreachable"
 REASON_SIGNAL = "signal"
 REASON_MAX_CLIPS = "max_clips"
 REASON_MODEL_SERVER_NOT_READY = "model_server_not_ready"
@@ -85,6 +86,7 @@ REASON_AUTH_ERROR = "auth_error"
 _EXIT_CODES = {
     REASON_IDLE: EXIT_OK,
     REASON_MAX_RUN: EXIT_OK,
+    REASON_JOB_API_UNREACHABLE: EXIT_OK,
     REASON_SIGNAL: EXIT_OK,
     REASON_MAX_CLIPS: EXIT_OK,
     REASON_MODEL_SERVER_NOT_READY: EXIT_SYSTEMIC,
@@ -223,7 +225,8 @@ class Runner:
         reason = self._wait_for_model_server()
         if reason is not None:
             return reason
-        idle_since: datetime | None = None
+        idle_since: datetime | None = None  # first of the consecutive "no clips" answers
+        failing_since: datetime | None = None  # first of the consecutive failed claims
         refreshes = 0
         while True:
             if self._should_stop():
@@ -247,16 +250,32 @@ class Runner:
                     return self._abandon_work(stop_reason)
                 continue
 
-            if self._claim():
+            claimed = self._claim()
+            now = self._clock.now()
+            if claimed is None:
+                # No answer from the Job API says nothing about whether work is left, so it never
+                # counts toward the idle exit (and interrupts the run of "no clips" answers).
+                idle_since = None
+                failing_since = failing_since or now
+                failing_seconds = (now - failing_since).total_seconds()
+                if failing_seconds >= self._settings.claim_failure_patience_minutes * 60:
+                    logger.error(
+                        "job_api_unreachable",
+                        extra={"failing_seconds": round(failing_seconds)},
+                    )
+                    return REASON_JOB_API_UNREACHABLE
+                self._clock.sleep(self._settings.empty_claim_wait_seconds)
+                continue
+            failing_since = None
+            if claimed:
                 if refreshes < MAX_REFRESHES_WITHOUT_A_CLIP:
                     idle_since = None
                     continue
                 logger.warning("lease_window_too_short", extra={"refreshes": refreshes})
                 self._work.clear()  # re-leased by the next claim; not started, so not skipped
-            now = self._clock.now()
             idle_since = idle_since or now
             idle_seconds = (now - idle_since).total_seconds()
-            if idle_seconds >= self._settings.idle_exit_minutes * 60:
+            if idle_seconds >= self._settings.idle_exit_seconds:
                 logger.info("idle_exit", extra={"idle_seconds": round(idle_seconds)})
                 return REASON_IDLE
             self._clock.sleep(self._settings.empty_claim_wait_seconds)
@@ -281,8 +300,9 @@ class Runner:
             waited = True
             self._clock.sleep(self._settings.model_server_health_poll_seconds)
 
-    def _claim(self) -> bool:
-        """Fill the work list from the Job API. True when it returned any clips."""
+    def _claim(self) -> bool | None:
+        """Fill the work list from the Job API. True when it returned any usable clips, False when
+        it answered with none, None when the claim failed (after the client's own retries)."""
         try:
             response = self._job_api.claim(
                 deadline_at=self._clock.now()
@@ -291,7 +311,7 @@ class Runner:
             )
         except TransientError as exc:
             logger.warning("claim_failed", extra={"error_type": type(exc).__name__})
-            return False
+            return None
         self._lease_expires_at = response.lease_expires_at
         added = 0
         for plan in response.plans:
