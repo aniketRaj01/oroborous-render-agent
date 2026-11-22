@@ -95,9 +95,14 @@ class Settings(BaseSettings):
         default=10, ge=1, le=50, validation_alias="MAX_PLANS_PER_CLAIM"
     )
     empty_claim_wait_seconds: float = Field(
-        default=60.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
+        default=10.0, gt=0, validation_alias="EMPTY_CLAIM_WAIT_SECONDS"
     )
-    idle_exit_minutes: float = Field(default=5.0, gt=0, validation_alias="IDLE_EXIT_MINUTES")
+    # Only claims the Job API answered with no clips count toward this.
+    idle_exit_seconds: float = Field(default=30.0, gt=0, validation_alias="IDLE_EXIT_SECONDS")
+    # Consecutive failed claims (no answer at all) for this long end the run, without a poweroff.
+    claim_failure_patience_minutes: float = Field(
+        default=5.0, gt=0, validation_alias="CLAIM_FAILURE_PATIENCE_MINUTES"
+    )
     # Power the instance off after an idle exit (see shutdown.py). Off unless the operator opts in.
     auto_shutdown_on_idle: bool = Field(default=False, validation_alias="AUTO_SHUTDOWN_ON_IDLE")
     auto_shutdown_grace_seconds: float = Field(
@@ -106,10 +111,15 @@ class Settings(BaseSettings):
     # Set by the bootstrap (version.env) when it could not move to the newest version and kept the
     # one that was already working: someone should look, so the instance stays up.
     bootstrap_fallback: bool = Field(default=False, validation_alias="AGENT_BOOTSTRAP_FALLBACK")
-    # The Job API ignores a deadline more than 180 minutes away, so stay well inside that.
-    run_deadline_minutes: float = Field(
-        default=55.0, gt=0, le=170, validation_alias="RUN_DEADLINE_MINUTES"
+    # Each claim asks for a lease this long (the deadline it sends is now + this). The Job API
+    # ignores a deadline more than 180 minutes away, so stay well inside that. A run has no overall
+    # time limit: when a clip would not finish inside the lease, the agent claims again.
+    lease_window_minutes: float = Field(
+        default=150.0, gt=0, le=170, validation_alias="LEASE_WINDOW_MINUTES"
     )
+    # Optional safety valve (operator's choice, unset = no limit): stop starting clips after this
+    # long and end the run like an idle exit.
+    max_run_minutes: float | None = Field(default=None, gt=0, validation_alias="MAX_RUN_MINUTES")
     clip_time_estimate_seconds: float = Field(
         default=300.0, gt=0, validation_alias="CLIP_TIME_ESTIMATE_SECONDS"
     )

@@ -4,7 +4,8 @@ The agent never powers anything off itself: it runs unprivileged with NoNewPrivi
 idle exit it writes a marker file; render-agent.service then runs deploy/poweroff-if-requested.sh
 as root (ExecStopPost, "+" prefix), which powers off only when that marker exists. The operating
 system poweroff makes EC2 stop the instance (its shutdown behaviour is "stop"); no AWS API is used.
-Only the idle exit gets here: every other end of a run (signal, deadline, errors) never writes it.
+Only the idle exit (or the optional MAX_RUN_MINUTES end) gets here: every other end of a run
+(signal, --max-clips, errors) never writes it.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from pathlib import Path
 from render_agent.clock import Clock
 from render_agent.config import Settings
 from render_agent.model_server.client import ModelServer
-from render_agent.runner import REASON_IDLE, RunResult
+from render_agent.runner import REASON_IDLE, REASON_MAX_RUN, RunResult
 from render_agent.scratch import unfinished_output_files
 
 logger = logging.getLogger("render_agent")
@@ -61,7 +62,7 @@ def request_poweroff_after_idle(
     request: Callable[[], None] = write_marker,
     guard_file: Path = NO_SHUTDOWN_FILE,
 ) -> str:
-    if result.reason != REASON_IDLE:
+    if result.reason not in (REASON_IDLE, REASON_MAX_RUN):
         return NOT_IDLE
     if not settings.auto_shutdown_on_idle:
         return DISABLED
@@ -99,7 +100,9 @@ def request_poweroff_after_idle(
 def _in_flight(result: RunResult, settings: Settings, model_server: ModelServer) -> str:
     """Idle implies nothing is in flight; say so loudly if that is not what we see."""
     found = []
-    if result.skipped:
+    if result.reason == REASON_IDLE and result.skipped:
+        # The work list is empty at an idle exit. (MAX_RUN_MINUTES may leave claimed clips to
+        # lease expiry on purpose; the next boot claims them again.)
         found.append("claimed clips were left unstarted")
     if unfinished_output_files(settings.scratch_dir):
         found.append("a clip output file is still in the scratch directory")
