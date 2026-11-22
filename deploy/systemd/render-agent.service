@@ -15,7 +15,7 @@ User=@SERVICE_USER@
 # Creates /run/render-agent for version.env, written by the bootstrap below.
 RuntimeDirectory=render-agent
 # agent.env: AGENT_ID and the SSM location of the Job API URL (no URL here). version.env:
-# AGENT_VERSION=<tag>+<short sha>, written by the bootstrap just before the agent starts.
+# AGENT_VERSION=main+<12 hex> (or <tag>+<12 hex>), written by the bootstrap just before the agent starts.
 # systemd reads each file when it starts the process, so the agent sees the fresh version.env.
 EnvironmentFile=-/etc/render-agent/agent.env
 EnvironmentFile=-/run/render-agent/version.env
@@ -23,7 +23,7 @@ Environment=PYTHONPATH=/opt/render-agent/current/src
 # No stray .env is read from here (the settings loader looks in the working directory).
 WorkingDirectory=/var/lib/render-agent
 
-# Fetch, verify and switch to the newest released tag, or fall back to the version that already
+# Fetch, verify and switch to the head of main (or the tag or commit it is told to), or fall back to the version that already
 # works. It exits non-zero only when nothing usable is installed. Its own time budget is 5 minutes;
 # TimeoutStartSec leaves room for the very first boot (a virtualenv built from PyPI on a slow
 # network) and still bounds a bootstrap that somehow ignores its budget.

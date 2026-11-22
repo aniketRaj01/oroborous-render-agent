@@ -273,7 +273,7 @@ def test_fetch_is_retried_with_backoff_until_the_network_is_up(world: World) -> 
     boot = world.boot()
     assert boot.code == 0 and world.current_tag == "v0.1.0"
     assert world.clock.sleeps == [2.0, 4.0, 8.0]
-    assert "fetched tags (attempt 4)" in boot.text
+    assert "fetched (attempt 4)" in boot.text
 
 
 def test_fetch_retries_are_bounded(world: World) -> None:
@@ -409,7 +409,7 @@ def test_a_selfcheck_that_reports_another_version_is_refused(world: World) -> No
     world.origin.release("0.1.0")
     world.tools.selfcheck_prints_version = {"0.1.0": "0.0.9"}
     boot = world.boot()
-    assert boot.code == 1 and "different version than the tag" in boot.text
+    assert boot.code == 1 and "different version than the release declares" in boot.text
 
 
 def test_previous_points_at_the_old_pair_after_a_switch(world: World) -> None:
@@ -729,6 +729,7 @@ def test_main_runs_a_bootstrap_from_the_environment(world: World) -> None:
             "RENDER_AGENT_HOME": str(world.home),
             "RENDER_AGENT_VERSION_ENV": str(world.version_env),
             "RENDER_AGENT_DEPLOY_ENV": str(world.tmp / "absent.env"),
+            "RENDER_AGENT_TRACK": "tags",
             "RENDER_AGENT_BOOTSTRAP_BUDGET_SECONDS": "oops",
             "PATH": os.environ["PATH"],
         },
@@ -742,6 +743,65 @@ def test_main_runs_a_bootstrap_from_the_environment(world: World) -> None:
 
 def test_main_rejects_unexpected_arguments() -> None:
     assert bootstrap.main(["--surprise"]) == 2
+
+
+# --- tracking main -------------------------------------------------------------------------------
+
+
+def test_the_default_is_to_track_main(tmp_path: Path) -> None:
+    assert load_config({"RENDER_AGENT_DEPLOY_ENV": str(tmp_path / "none")}).track == "main"
+
+
+def test_main_mode_runs_the_head_of_main_without_tags_or_a_matching_version(world: World) -> None:
+    first = world.origin.commit("0.0.0.dev0")
+    boot = world.boot(track="main")
+    assert boot.code == 0 and "first install" in boot.final
+    assert world.agent_version_file() == f"AGENT_VERSION=main+{first[:12]}\n"
+    assert world.releases() == [f"main-{first[:12]}"] and world.current_tag == "main"
+
+    unchanged = world.boot(track="main")
+    assert unchanged.final.endswith("(unchanged)")
+
+    second = world.origin.commit(message="docs only")
+    boot = world.boot(track="main")
+    assert f"main+{second[:12]}" in boot.final and f"was main+{first[:12]}" in boot.final
+    assert world.previous_tag == "main" and len(world.releases()) == 2
+    assert len(world.agent_version_file().strip().removeprefix("AGENT_VERSION=")) <= 64
+
+
+def test_main_mode_keeps_the_working_commit_when_the_new_one_fails_its_selfcheck(
+    world: World,
+) -> None:
+    good = world.origin.commit("0.1.0")
+    world.boot(track="main")
+    world.origin.commit("0.1.1")
+    world.tools.selfcheck_fails = {"0.1.1"}
+    boot = world.boot(track="main")
+    assert boot.code == 0 and "(fallback: selfcheck failed" in boot.final
+    assert world.agent_version_file() == f"AGENT_VERSION=main+{good[:12]}\n"
+
+
+def test_a_pin_accepts_a_commit_hash_that_is_on_main(world: World) -> None:
+    old = world.origin.commit("0.1.0")
+    world.origin.commit("0.1.1")
+    boot = world.boot(track="main", pin=old[:10])
+    assert boot.code == 0
+    assert world.agent_version_file() == f"AGENT_VERSION=commit+{old[:12]}\n"
+
+
+def test_a_pinned_commit_that_is_not_on_main_is_refused(world: World) -> None:
+    good = world.origin.commit("0.1.0")
+    world.boot(track="main")
+    side = world.origin.side_branch_release("0.9.0")
+    boot = world.boot(track="main", pin=side)
+    assert "(fallback:" in boot.final and f"main+{good[:12]}" in boot.final
+
+
+def test_an_unknown_track_value_falls_back_instead_of_guessing(world: World) -> None:
+    world.origin.release("0.1.0")
+    world.boot(track="tags")
+    boot = world.boot(track="tag")
+    assert "RENDER_AGENT_TRACK must be" in boot.final and world.current_tag == "v0.1.0"
 
 
 # --- AC2: a simulated history of boots ---------------------------------------------------------

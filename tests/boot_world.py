@@ -57,6 +57,7 @@ class World:
             "home": self.home,
             "version_env": self.version_env,
             "python": "python3",
+            "track": "tags",  # most tests exercise the tag mode; main mode tests override it
         }
         values.update(overrides)
         return Config(**values)  # type: ignore[arg-type]
